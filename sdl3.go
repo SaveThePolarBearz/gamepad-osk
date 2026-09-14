@@ -13,6 +13,15 @@ package main
 // Helper to access event.type since "type" is a Go keyword
 static Uint32 sdl_event_type(SDL_Event *e) { return e->type; }
 
+// SDL3's SDL_Event embeds an anonymous union, which cgo cannot resolve, so
+// access the pointer/touch payloads through accessors.
+static float sdl_tfinger_x(SDL_Event *e) { return e->tfinger.x; }
+static float sdl_tfinger_y(SDL_Event *e) { return e->tfinger.y; }
+static Sint64 sdl_tfinger_id(SDL_Event *e) { return e->tfinger.fingerID; }
+static float sdl_button_x(SDL_Event *e) { return e->button.x; }
+static float sdl_button_y(SDL_Event *e) { return e->button.y; }
+static Uint8 sdl_button_button(SDL_Event *e) { return e->button.button; }
+
 // Helper to create a window with properties, avoiding Go/C string interop issues
 // with SDL3's #define string constants.
 static SDL_Window* create_window_props(const char *title, int x, int y, int w, int h,
@@ -249,6 +258,7 @@ func SDL3SurfaceHeight(s *Surface) int32 {
 // --- Events ---
 
 // SDL3PollEvent returns the event type and true if an event was available.
+//
 //nolint:gocritic // dupSubExpr: false positive from cgo generated code
 func SDL3PollEvent() (uint32, bool) {
 	var event C.SDL_Event
@@ -258,9 +268,50 @@ func SDL3PollEvent() (uint32, bool) {
 	return 0, false
 }
 
+// SDL3Event carries the subset of an SDL_Event the OSK consumes: touch
+// finger positions and mouse button presses.
+type SDL3Event struct {
+	Type        uint32
+	FingerX     float32 // normalized 0.0-1.0 relative to the window
+	FingerY     float32
+	FingerID    int64
+	MouseX      float32 // window pixel coordinates
+	MouseY      float32
+	MouseButton uint8
+}
+
+// SDL3PollEventData returns the next event with its payload filled in.
+//
+//nolint:gocritic // dupSubExpr: false positive from cgo generated code
+func SDL3PollEventData() (SDL3Event, bool) {
+	var event C.SDL_Event
+	if !C.SDL_PollEvent(&event) {
+		return SDL3Event{}, false
+	}
+	e := SDL3Event{Type: uint32(C.sdl_event_type(&event))}
+	switch e.Type {
+	case SDL_EVENT_FINGER_DOWN, SDL_EVENT_FINGER_MOTION, SDL_EVENT_FINGER_UP, SDL_EVENT_FINGER_CANCELED:
+		e.FingerX = float32(C.sdl_tfinger_x(&event))
+		e.FingerY = float32(C.sdl_tfinger_y(&event))
+		e.FingerID = int64(C.sdl_tfinger_id(&event))
+	case SDL_EVENT_MOUSE_BUTTON_DOWN, SDL_EVENT_MOUSE_BUTTON_UP:
+		e.MouseX = float32(C.sdl_button_x(&event))
+		e.MouseY = float32(C.sdl_button_y(&event))
+		e.MouseButton = uint8(C.sdl_button_button(&event))
+	}
+	return e, true
+}
+
 //nolint:revive // Match SDL3 naming convention
 const (
-	SDL_EVENT_QUIT uint32 = 0x100
+	SDL_EVENT_QUIT              uint32 = 0x100
+	SDL_EVENT_MOUSE_MOTION      uint32 = 0x400
+	SDL_EVENT_MOUSE_BUTTON_DOWN uint32 = 0x401
+	SDL_EVENT_MOUSE_BUTTON_UP   uint32 = 0x402
+	SDL_EVENT_FINGER_DOWN       uint32 = 0x700
+	SDL_EVENT_FINGER_UP         uint32 = 0x701
+	SDL_EVENT_FINGER_MOTION     uint32 = 0x702
+	SDL_EVENT_FINGER_CANCELED   uint32 = 0x703
 )
 
 // --- Display ---

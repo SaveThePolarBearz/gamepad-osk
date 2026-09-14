@@ -32,6 +32,7 @@ type App struct {
 	window   *Window
 	mon      MonitorRect // raw monitor bounds
 	posArea  MonitorRect // positioning area (workarea on X11, same as mon on Wayland)
+	winW     int32
 	winH     int32
 	winX     int32 // stored for re-apply after show
 	winY     int32
@@ -52,6 +53,11 @@ type App struct {
 	// fallback so a user who never releases the combo still gets a grab.
 	grabPending      bool
 	grabPendingUntil time.Time
+
+	// Pointer (touch/mouse) interaction: pointOnPopup tracks whether the
+	// current pointer-down landed on the accent popup, so that release
+	// confirms the highlighted accent rather than a keyboard key.
+	pointOnPopup bool
 }
 
 func NewApp(config Config) *App {
@@ -88,6 +94,10 @@ func (app *App) Run() error {
 	// display, so opt out before init. On Wayland this avoids requesting
 	// idle-inhibit.
 	SDL3SetHint("SDL_VIDEO_ALLOW_SCREENSAVER", "1")
+
+	// Touch events must drive the keyboard directly; don't let SDL also turn
+	// them into synthetic mouse clicks or every tap would press twice.
+	SDL3SetHint("SDL_TOUCH_MOUSE_EVENTS", "0")
 
 	if err := SDL3Init(SDL_INIT_VIDEO); err != nil {
 		return err
@@ -179,6 +189,7 @@ func (app *App) Run() error {
 	app.window = window
 	app.mon = mon
 	app.posArea = posArea
+	app.winW = width
 	app.winH = height
 	app.winX = x
 	app.margin = margin
@@ -380,10 +391,28 @@ func (app *App) Run() error {
 		}
 		app.lock.Unlock()
 
-		// Process SDL3 window events
-		for evType, ok := SDL3PollEvent(); ok; evType, ok = SDL3PollEvent() {
-			if evType == SDL_EVENT_QUIT {
+		// Process SDL3 window / touch / mouse events
+		for ev, ok := SDL3PollEventData(); ok; ev, ok = SDL3PollEventData() {
+			switch ev.Type {
+			case SDL_EVENT_QUIT:
 				app.running = false
+			case SDL_EVENT_FINGER_DOWN:
+				px, py := app.touchToPx(ev)
+				app.handlePointer(pointerDown, px, py, kb, inj, rend)
+			case SDL_EVENT_FINGER_MOTION:
+				px, py := app.touchToPx(ev)
+				app.handlePointer(pointerMove, px, py, kb, inj, rend)
+			case SDL_EVENT_FINGER_UP, SDL_EVENT_FINGER_CANCELED:
+				px, py := app.touchToPx(ev)
+				app.handlePointer(pointerUp, px, py, kb, inj, rend)
+			case SDL_EVENT_MOUSE_BUTTON_DOWN:
+				if ev.MouseButton == 1 {
+					app.handlePointer(pointerDown, int32(ev.MouseX), int32(ev.MouseY), kb, inj, rend)
+				}
+			case SDL_EVENT_MOUSE_BUTTON_UP:
+				if ev.MouseButton == 1 {
+					app.handlePointer(pointerUp, int32(ev.MouseX), int32(ev.MouseY), kb, inj, rend)
+				}
 			}
 		}
 
@@ -616,6 +645,76 @@ func (app *App) handleAction(a Action, kb *KeyboardState, inj *Injector, rend *R
 		app.stopRepeat()
 		app.running = false
 		return
+	}
+}
+
+// touchToPx converts normalized finger coordinates to window pixels so the
+// same window-space mapping as mouse clicks can be used for both.
+func (app *App) touchToPx(ev SDL3Event) (int32, int32) {
+	return int32(ev.FingerX * float32(app.winW)), int32(ev.FingerY * float32(app.winH))
+}
+
+type pointerAction int
+
+const (
+	pointerDown pointerAction = iota
+	pointerMove
+	pointerUp
+)
+
+// handlePointer drives grid navigation from touch and mouse input: the
+// highlight follows the pointer, and a key press fires on release (matching
+// the gamepad A-button short-press semantics). While the accent popup is
+// open, a pointer-down on it selects the accent and release confirms it.
+func (app *App) handlePointer(a pointerAction, x, y int32, kb *KeyboardState, inj *Injector, rend *Renderer) {
+	if !app.visible {
+		return
+	}
+	rend.MarkDirty()
+
+	switch a {
+	case pointerDown:
+		kb.ReleaseAltTab(inj)
+		if kb.AccentPopup != nil {
+			if idx, ok := rend.AccentCellAt(kb, x, y); ok {
+				kb.AccentPopup.Selected = idx
+				app.pointOnPopup = true
+				return
+			}
+			kb.CloseAccentPopup()
+		}
+		app.moveCursorTo(x, y, kb, rend)
+	case pointerMove:
+		if kb.AccentPopup != nil && app.pointOnPopup {
+			if idx, ok := rend.AccentCellAt(kb, x, y); ok {
+				kb.AccentPopup.Selected = idx
+			}
+			return
+		}
+		app.moveCursorTo(x, y, kb, rend)
+	case pointerUp:
+		app.pointOnPopup = false
+		if kb.AccentPopup != nil {
+			if _, ok := rend.AccentCellAt(kb, x, y); ok {
+				kb.PressCurrent(inj) // confirms the highlighted accent
+				return
+			}
+			kb.CloseAccentPopup()
+			return
+		}
+		if row, col, ok := rend.KeyAtWindow(kb, x, y); ok {
+			kb.CursorRow = row
+			kb.CursorCol = col
+			kb.PressCurrent(inj)
+		}
+	}
+}
+
+// moveCursorTo moves the grid highlight to the key under a window pixel point.
+func (app *App) moveCursorTo(x, y int32, kb *KeyboardState, rend *Renderer) {
+	if row, col, ok := rend.KeyAtWindow(kb, x, y); ok {
+		kb.CursorRow = row
+		kb.CursorCol = col
 	}
 }
 

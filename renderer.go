@@ -350,6 +350,68 @@ func (r *Renderer) renderText(font *Font, text string, color Color, rect FRect, 
 	SDL3RenderTexture(r.renderer, entry.tex, nil, &dst)
 }
 
+// KeyAtWindow maps a window pixel point to the keyboard grid, returning the
+// (row, col) of the key nearest to it. Points inside a row's vertical band
+// always resolve to the nearest column (snapping in the padding gaps and
+// clamping at the row edges). Returns ok=false only for points above the
+// keyboard area (status bar) or below the last row.
+func (r *Renderer) KeyAtWindow(kb *KeyboardState, px, py int32) (int, int, bool) {
+	top := r.pad + r.statusH
+	if py < top {
+		return 0, 0, false
+	}
+	ri := int(py-top) / int(r.unit+r.pad)
+	if ri < 0 || ri >= len(kb.Layout) {
+		return 0, 0, false
+	}
+	row := kb.Layout[ri]
+
+	bestCol := 0
+	bestDist := int64(1) << 62
+	x := r.pad
+	for ci, key := range row {
+		center := x + int32(key.Width*float64(r.unit))/2
+		dist := int64(px) - int64(center)
+		if dist < 0 {
+			dist = -dist
+		}
+		if dist < bestDist {
+			bestDist = dist
+			bestCol = ci
+		}
+		x += int32(key.Width*float64(r.unit)) + r.pad
+	}
+	return ri, bestCol, true
+}
+
+// AccentCellAt reports the accent popup cell index under a window pixel
+// point, or ok=false when the point is outside the popup's cells.
+func (r *Renderer) AccentCellAt(kb *KeyboardState, px, py int32) (int, bool) {
+	if kb.AccentPopup == nil {
+		return 0, false
+	}
+	row := kb.Layout[kb.CursorRow]
+
+	xo := r.pad
+	for i := 0; i < kb.CursorCol; i++ {
+		xo += int32(row[i].Width*float64(r.unit)) + r.pad
+	}
+	ky := r.pad + r.statusH + int32(kb.CursorRow)*(r.unit+r.pad) //nolint:gosec // G115: cursor index fits in int32
+	py0 := ky - r.unit - r.pad
+	cellTop := py0 + r.pad
+
+	if py < cellTop || py >= cellTop+r.unit {
+		return 0, false
+	}
+	for i := range kb.AccentPopup.Accents {
+		cx := xo + r.pad + int32(i)*(r.unit+r.pad) //nolint:gosec // G115: accent index fits in int32
+		if px >= cx && px < cx+r.unit {
+			return i, true
+		}
+	}
+	return 0, false
+}
+
 func (r *Renderer) SetTheme(t Theme) {
 	r.theme = t
 	r.flushTexCache()
