@@ -28,6 +28,8 @@ type App struct {
 	touchOnly       bool
 	togglePending   bool
 	grabModePending bool
+	showPending     bool
+	hidePending     bool
 	lock            sync.Mutex
 	themeIdx        int
 	posTop          bool // true = keyboard at top of screen
@@ -270,6 +272,14 @@ func (app *App) Run() error {
 			app.lock.Lock()
 			app.togglePending = true
 			app.lock.Unlock()
+		case "show":
+			app.lock.Lock()
+			app.showPending = true
+			app.lock.Unlock()
+		case "hide":
+			app.lock.Lock()
+			app.hidePending = true
+			app.lock.Unlock()
 		case "ping":
 			// Instance check - connection success is the answer
 		case "grab-mode-on":
@@ -342,68 +352,9 @@ func (app *App) Run() error {
 	}
 
 	for app.running {
-		// Handle toggle
+		// Handle toggle / explicit show / explicit hide
 		app.lock.Lock()
-		if app.togglePending {
-			app.togglePending = false
-			app.visible = !app.visible
-			if app.visible {
-				if cfg.Gamepad.Grab {
-					app.grabPending = true
-					app.grabPendingUntil = time.Now().Add(500 * time.Millisecond)
-				}
-				if !hasLayerShell() {
-					SaveFocusedWindow() // capture game window now, used by RestoreFocus on hide
-				}
-				if isWayland {
-					attachLayerShellAsync(window, width, height, app.posTop, margin, cfg.Window.PanelAvoid)
-				} else {
-					SDL3ShowWindow(window)
-				}
-				rend.MarkDirty()
-				if opacity < 1.0 {
-					SDL3SetWindowOpacity(window, opacity) // re-apply after show
-				}
-				if !isWayland {
-					app.winY = app.computeY()
-					SDL3SetWindowPosition(window, app.winX, app.winY)
-					SetNoFocusHints(window)
-					// No RestoreFocus: XMapRaised does not steal focus; calling XSetInputFocus here
-					// changes _NET_ACTIVE_WINDOW to prev_focused (terminal), triggering xfce4-panel.
-				}
-			} else {
-				app.stopRepeat()
-				kb.CapsActive = false
-				kb.ShiftActive = false
-				kb.ShiftHeld = false
-				kb.CtrlActive = false
-				kb.AltActive = false
-				kb.MetaActive = false
-				kb.ReleaseAltTab(inj)
-				if inj != nil {
-					inj.ReleaseKey(KEY_LEFTSHIFT)
-					inj.ReleaseKey(KEY_LEFTCTRL)
-					inj.ReleaseKey(KEY_LEFTALT)
-					inj.ReleaseKey(KEY_LEFTMETA)
-					inj.ClickMouse(0x110, false) // BTN_LEFT release
-					inj.ClickMouse(0x111, false) // BTN_RIGHT release
-				}
-				// Cancel any pending grab so it can't fire after hide.
-				app.grabPending = false
-				gamepad.Ungrab()
-				if isWayland {
-					destroyLayerSurface()
-				} else {
-					SDL3HideWindow(window)
-				}
-				if !isWayland {
-					if IsSavedWindowFullscreen() {
-						WarpPointerIfOutside()
-					}
-					RestoreFocus()
-				}
-			}
-		}
+		app.applyShowHide(inj, kb, rend, gamepad, cfg.Gamepad.Grab, hasLayerShell(), isWayland, window, width, height, app.posTop, margin, cfg.Window.PanelAvoid, opacity)
 		app.lock.Unlock()
 
 		// Live grab-mode switch: re-open or close the gamepad reader without
@@ -564,6 +515,87 @@ func (app *App) Run() error {
 		}
 	}
 	return nil
+}
+
+// applyShowHide reconciles app.visible against a pending show/hide request
+// (toggle flips; an explicit show/hide is idempotent). Callers must hold app.lock.
+// It does nothing when no action is requested or the desired state already matches.
+func (app *App) applyShowHide(inj *Injector, kb *KeyboardState, rend *Renderer, gamepad *GamepadReader, grab, hasLS, isWayland bool, window *Window, width, height int32, posTop bool, margin int32, panelAvoid bool, opacity float32) {
+	var wantShow bool
+	switch {
+	case app.showPending:
+		wantShow = true
+	case app.hidePending:
+		wantShow = false
+	case app.togglePending:
+		wantShow = !app.visible
+	default:
+		return
+	}
+	app.togglePending = false
+	app.showPending = false
+	app.hidePending = false
+	if app.visible == wantShow {
+		return // already in the requested state (idempotent show/hide)
+	}
+	app.visible = wantShow
+
+	if app.visible {
+		if grab {
+			app.grabPending = true
+			app.grabPendingUntil = time.Now().Add(500 * time.Millisecond)
+		}
+		if !hasLS {
+			SaveFocusedWindow() // capture game window now, used by RestoreFocus on hide
+		}
+		if isWayland {
+			attachLayerShellAsync(window, width, height, posTop, margin, panelAvoid)
+		} else {
+			SDL3ShowWindow(window)
+		}
+		rend.MarkDirty()
+		if opacity < 1.0 {
+			SDL3SetWindowOpacity(window, opacity) // re-apply after show
+		}
+		if !isWayland {
+			app.winY = app.computeY()
+			SDL3SetWindowPosition(window, app.winX, app.winY)
+			SetNoFocusHints(window)
+			// No RestoreFocus: XMapRaised does not steal focus; calling XSetInputFocus here
+			// changes _NET_ACTIVE_WINDOW to prev_focused (terminal), triggering xfce4-panel.
+		}
+	} else {
+		app.stopRepeat()
+		kb.CapsActive = false
+		kb.ShiftActive = false
+		kb.ShiftHeld = false
+		kb.CtrlActive = false
+		kb.AltActive = false
+		kb.MetaActive = false
+		kb.ReleaseAltTab(inj)
+		if inj != nil {
+			inj.ReleaseKey(KEY_LEFTSHIFT)
+			inj.ReleaseKey(KEY_LEFTCTRL)
+			inj.ReleaseKey(KEY_LEFTALT)
+			inj.ReleaseKey(KEY_LEFTMETA)
+			inj.ClickMouse(0x110, false) // BTN_LEFT release
+			inj.ClickMouse(0x111, false) // BTN_RIGHT release
+		}
+		// Cancel any pending grab so it can't fire after hide.
+		app.grabPending = false
+		gamepad.Ungrab()
+		if isWayland {
+			destroyLayerSurface()
+		} else {
+			SDL3HideWindow(window)
+		}
+		if !isWayland {
+			if IsSavedWindowFullscreen() {
+				WarpPointerIfOutside()
+			}
+			RestoreFocus()
+		}
+	}
 }
 
 func (app *App) handleAction(a Action, kb *KeyboardState, inj *Injector, rend *Renderer) {

@@ -31,6 +31,18 @@ func main() {
 				os.Exit(0)
 			}
 			fmt.Fprintln(os.Stderr, "No running instance, starting new...")
+		case "--show":
+			if IPCSend("show") {
+				os.Exit(0)
+			}
+			fmt.Fprintln(os.Stderr, "No running instance (send show)")
+			os.Exit(1)
+		case "--hide":
+			if IPCSend("hide") {
+				os.Exit(0)
+			}
+			fmt.Fprintln(os.Stderr, "No running instance (send hide)")
+			os.Exit(1)
 		case "--grab-mode-on":
 			if IPCSend("grab-mode-on") {
 				os.Exit(0)
@@ -212,7 +224,9 @@ OPTIONS
   --device, -d PATH    Input device (overrides config, overrides auto-detect)
   --theme, -t NAME     Color theme (overrides config)
   --config, -c PATH    Config file path (overrides search order)
-  --toggle             Toggle visibility of running instance (for evsieve/hotkey)
+	--toggle             Toggle visibility of running instance (for evsieve/hotkey)
+   --show               Show a running instance (idempotent)
+   --hide               Hide a running instance (idempotent)
   --daemon             Start hidden, wait for toggle combo or --toggle to show
                        Close button (B) hides instead of exiting in daemon mode
   --touch-only         Never open the gamepad: display + touch only (at startup)
