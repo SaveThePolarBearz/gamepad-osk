@@ -25,6 +25,7 @@ type App struct {
 	running       bool
 	visible       bool
 	daemon        bool
+	touchOnly     bool
 	togglePending bool
 	lock          sync.Mutex
 	themeIdx int
@@ -245,12 +246,15 @@ func (app *App) Run() error {
 	}()
 
 	gamepad := NewGamepadReader(cfg)
-	if !gamepad.Open("") {
+	if !app.touchOnly && !gamepad.Open("") {
 		log.Printf("Warning: no gamepad found")
 		log.Printf("Usage: gamepad-osk --device /dev/input/gamepad0")
 	}
+	if app.touchOnly {
+		log.Printf("Touch-only mode: gamepad reader disabled (no open, no grab)")
+	}
 	defer gamepad.Close()
-	if cfg.Gamepad.Grab && app.visible {
+	if !app.touchOnly && cfg.Gamepad.Grab && app.visible {
 		app.grabPending = true
 		app.grabPendingUntil = time.Now().Add(500 * time.Millisecond)
 	}
@@ -438,7 +442,7 @@ func (app *App) Run() error {
 		}
 
 		// Gamepad reconnection (2s cooldown between attempts)
-		if gamepad.Fd() < 0 {
+		if !app.touchOnly && gamepad.Fd() < 0 {
 			now := time.Now()
 			if now.Sub(app.reconnectLast) >= 2*time.Second {
 				app.reconnectLast = now

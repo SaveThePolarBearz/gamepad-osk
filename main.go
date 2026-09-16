@@ -21,6 +21,7 @@ func main() {
 	daemon := false
 	setupMode := false
 	installMode := false
+	touchOnly := false
 
 	i := 0
 	for i < len(args) {
@@ -42,6 +43,8 @@ func main() {
 			installMode = true
 		case "--daemon":
 			daemon = true
+		case "--touch-only":
+			touchOnly = true
 		case "--verbose", "-v":
 			Verbose = true
 		case "--device", "-d":
@@ -102,6 +105,9 @@ func main() {
 		}
 		config.Theme.Name = themeName
 	}
+	if touchOnly {
+		config.Gamepad.Grab = false
+	}
 
 	// Check for existing instance before starting
 	Debugf("Checking for existing instance...")
@@ -120,6 +126,9 @@ func main() {
 	Debugf("No existing instance found")
 
 	app := NewApp(config)
+	if touchOnly {
+		app.touchOnly = true
+	}
 	if daemon {
 		app.daemon = true
 		app.visible = false
@@ -194,6 +203,8 @@ OPTIONS
   --toggle             Toggle visibility of running instance (for evsieve/hotkey)
   --daemon             Start hidden, wait for toggle combo or --toggle to show
                        Close button (B) hides instead of exiting in daemon mode
+  --touch-only         Never open the gamepad: display + touch only. Used when
+                       the gamepad is driving something else (swaynav) alongside
   --setup              Check system configuration (udev, permissions, config)
   --setup --install    Deploy udev rules, config, and systemd service
   --verbose, -v        Verbose logging (gamepad events, key injection, config)
