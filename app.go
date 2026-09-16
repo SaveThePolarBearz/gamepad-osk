@@ -3,9 +3,9 @@ package main //nolint:revive // main package needs no doc comment
 import (
 	"log"
 	"os"
-	"strconv"
 	"runtime"
 	"sort"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -21,29 +21,30 @@ func init() {
 }
 
 type App struct {
-	config        Config
-	running       bool
-	visible       bool
-	daemon        bool
-	touchOnly     bool
-	togglePending bool
-	lock          sync.Mutex
-	themeIdx int
-	posTop   bool // true = keyboard at top of screen
-	window   *Window
-	mon      MonitorRect // raw monitor bounds
-	posArea  MonitorRect // positioning area (workarea on X11, same as mon on Wayland)
-	winW     int32
-	winH     int32
-	winX     int32 // stored for re-apply after show
-	winY     int32
-	margin   int32
+	config          Config
+	running         bool
+	visible         bool
+	daemon          bool
+	touchOnly       bool
+	togglePending   bool
+	grabModePending bool
+	lock            sync.Mutex
+	themeIdx        int
+	posTop          bool // true = keyboard at top of screen
+	window          *Window
+	mon             MonitorRect // raw monitor bounds
+	posArea         MonitorRect // positioning area (workarea on X11, same as mon on Wayland)
+	winW            int32
+	winH            int32
+	winX            int32 // stored for re-apply after show
+	winY            int32
+	margin          int32
 
 	// Key repeat state
-	repeatAction   ActionType // action to repeat (ActionNone = inactive)
-	repeatStart    time.Time  // when key was first pressed
-	repeatLast     time.Time  // when last repeat fired
-	repeatInitial  bool       // true = still in initial delay phase
+	repeatAction  ActionType // action to repeat (ActionNone = inactive)
+	repeatStart   time.Time  // when key was first pressed
+	repeatLast    time.Time  // when last repeat fired
+	repeatInitial bool       // true = still in initial delay phase
 
 	reconnectLast time.Time // cooldown for gamepad reconnection attempts
 
@@ -271,6 +272,16 @@ func (app *App) Run() error {
 			app.lock.Unlock()
 		case "ping":
 			// Instance check - connection success is the answer
+		case "grab-mode-on":
+			app.lock.Lock()
+			app.touchOnly = false
+			app.grabModePending = true
+			app.lock.Unlock()
+		case "grab-mode-off":
+			app.lock.Lock()
+			app.touchOnly = true
+			app.grabModePending = true
+			app.lock.Unlock()
 		}
 	})
 	if err := ipc.Start(); err != nil {
@@ -394,6 +405,35 @@ func (app *App) Run() error {
 			}
 		}
 		app.lock.Unlock()
+
+		// Live grab-mode switch: re-open or close the gamepad reader without
+		// restarting the daemon. Runs on the render thread; IPC handler only
+		// set the pending flag. Idempotent: keyed off actual fd state.
+		if app.grabModePending {
+			app.grabModePending = false
+			if app.touchOnly {
+				if gamepad.Fd() >= 0 {
+					app.grabPending = false
+					gamepad.Ungrab()
+					gamepad.Close()
+					KeyGlyphs = BuildKeyGlyphs(gamepad.config.Gamepad)
+					log.Printf("Grab mode off: gamepad reader closed (touch only)")
+				}
+			} else {
+				if gamepad.Fd() < 0 {
+					if gamepad.Open("") {
+						KeyGlyphs = BuildKeyGlyphs(gamepad.config.Gamepad)
+						if app.visible && cfg.Gamepad.Grab {
+							app.grabPending = true
+							app.grabPendingUntil = time.Now().Add(500 * time.Millisecond)
+						}
+						log.Printf("Grab mode on: gamepad reader active")
+					} else if cfg.Gamepad.Device == "" {
+						log.Printf("Grab mode on: no gamepad found (recheck on reconnect)")
+					}
+				}
+			}
+		}
 
 		// Process SDL3 window / touch / mouse events
 		for ev, ok := SDL3PollEventData(); ok; ev, ok = SDL3PollEventData() {

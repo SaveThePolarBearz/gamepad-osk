@@ -31,6 +31,18 @@ func main() {
 				os.Exit(0)
 			}
 			fmt.Fprintln(os.Stderr, "No running instance, starting new...")
+		case "--grab-mode-on":
+			if IPCSend("grab-mode-on") {
+				os.Exit(0)
+			}
+			fmt.Fprintln(os.Stderr, "No running instance (send grab-mode-on)")
+			os.Exit(1)
+		case "--grab-mode-off":
+			if IPCSend("grab-mode-off") {
+				os.Exit(0)
+			}
+			fmt.Fprintln(os.Stderr, "No running instance (send grab-mode-off)")
+			os.Exit(1)
 		case "--version", "-V":
 			fmt.Printf("gamepad-osk v%s\n", version)
 			os.Exit(0)
@@ -203,8 +215,10 @@ OPTIONS
   --toggle             Toggle visibility of running instance (for evsieve/hotkey)
   --daemon             Start hidden, wait for toggle combo or --toggle to show
                        Close button (B) hides instead of exiting in daemon mode
-  --touch-only         Never open the gamepad: display + touch only. Used when
-                       the gamepad is driving something else (swaynav) alongside
+  --touch-only         Never open the gamepad: display + touch only (at startup)
+  --grab-mode-on       Live: enable the gamepad reader on a running instance
+  --grab-mode-off      Live: disable the gamepad reader on a running instance
+                       (display + touch only) -- for when the pad drives swaynav
   --setup              Check system configuration (udev, permissions, config)
   --setup --install    Deploy udev rules, config, and systemd service
   --verbose, -v        Verbose logging (gamepad events, key injection, config)

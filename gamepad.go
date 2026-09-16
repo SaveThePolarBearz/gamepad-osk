@@ -775,6 +775,7 @@ func (gp *GamepadReader) Close() {
 	gp.Ungrab()
 	if gp.fd != nil {
 		_ = gp.fd.Close()
+		gp.fd = nil
 	}
 }
 
