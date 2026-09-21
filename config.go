@@ -37,6 +37,7 @@ type WindowConfig struct {
 	BottomMargin int     // deprecated, migrated to Margin
 	Opacity      float64
 	PanelAvoid   bool    // Wayland: respect panel exclusive zones (false = always screen edge)
+	Mode         string  // overlay (float over windows) or shift (reserve space, tiles move aside)
 }
 
 type KeysConfig struct {
@@ -80,7 +81,7 @@ type MouseConfig struct {
 func DefaultConfig() Config {
 	return Config{
 		Theme:  ThemeConfig{Name: "matrix"},
-		Window: WindowConfig{Position: "bottom", Margin: 0, Opacity: 0.95, PanelAvoid: true},
+		Window: WindowConfig{Position: "bottom", Margin: 0, Opacity: 0.95, PanelAvoid: true, Mode: "overlay"},
 		Keys:   KeysConfig{UnitSize: 0, Padding: 4, FontSize: 0, Scale: 50, RepeatDelayMs: 400, RepeatRateMs: 80},
 		Gamepad: GamepadConfig{
 			Grab:          true,
@@ -178,6 +179,8 @@ func parseINI(r io.Reader, cfg *Config) error {
 				}
 			case "panel_avoid":
 				cfg.Window.PanelAvoid = parseBool("panel_avoid", val, true)
+			case "mode":
+				cfg.Window.Mode = val
 			default:
 				Debugf("unknown config key: window.%s", key)
 			}
@@ -298,6 +301,7 @@ func writeINI(w io.Writer, cfg Config) error {
 	b.WriteString(line(kvf("margin", cfg.Window.Margin), "pixels from screen edge"))
 	b.WriteString(line(kv("opacity", strconv.FormatFloat(cfg.Window.Opacity, 'f', -1, 64)), "0.0-1.0 (1.0 = fully opaque)"))
 	b.WriteString(line(kv("panel_avoid", strconv.FormatBool(cfg.Window.PanelAvoid)), "Wayland: respect panel spacing (false = always screen edge)"))
+	b.WriteString(line(kv("mode", cfg.Window.Mode), "overlay = float over windows (default), shift = reserve space, tiles move aside"))
 	b.WriteString("\n")
 
 	b.WriteString("[keys]\n")
@@ -691,6 +695,9 @@ func checkConfig(cfg Config) []string {
 	if p := cfg.Window.Position; p != "bottom" && p != "top" {
 		issues = append(issues, fmt.Sprintf("position %q is not valid (use bottom or top)", p))
 	}
+	if m := cfg.Window.Mode; m != "overlay" && m != "shift" {
+		issues = append(issues, fmt.Sprintf("mode %q is not valid (use overlay or shift)", m))
+	}
 	if cfg.Window.Opacity < 0 || cfg.Window.Opacity > 1 {
 		issues = append(issues, fmt.Sprintf("opacity %.2f out of range [0,1]", cfg.Window.Opacity))
 	}
@@ -740,6 +747,10 @@ func ValidateConfig(cfg *Config) {
 	if cfg.Gamepad.ComboPeriodMs < 50 || cfg.Gamepad.ComboPeriodMs > 2000 {
 		log.Printf("Warning: combo_period_ms %d out of range [50,2000], using 200", cfg.Gamepad.ComboPeriodMs)
 		cfg.Gamepad.ComboPeriodMs = 200
+	}
+	if m := cfg.Window.Mode; m != "overlay" && m != "shift" {
+		log.Printf("Warning: mode %q is not valid (use overlay or shift), using overlay", cfg.Window.Mode)
+		cfg.Window.Mode = "overlay"
 	}
 	if cfg.Gamepad.ToggleCombo != "" {
 		if _, err := parseComboString(cfg.Gamepad.ToggleCombo); err != nil {

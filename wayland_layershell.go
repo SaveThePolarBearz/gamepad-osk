@@ -156,7 +156,7 @@ static int discover_globals(SDL_Window *sdl_win) {
 // Configure arrives via SDL's event pump. Check is_layer_shell_ready() before rendering.
 // Returns 0 on success, -1 if layer_shell not available, -2 on other error.
 static int attach_layer_shell_async(SDL_Window *sdl_win, int width, int height,
-    int anchor_top, int margin, int panel_avoid) {
+    int anchor_top, int margin, int exclusive_zone) {
 
     // Get wl_display from SDL3
     SDL_PropertiesID gprops = SDL_GetGlobalProperties();
@@ -217,7 +217,7 @@ static int attach_layer_shell_async(SDL_Window *sdl_win, int width, int height,
 
     zwlr_layer_surface_v1_set_keyboard_interactivity(layer_surface,
         ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_NONE);
-    zwlr_layer_surface_v1_set_exclusive_zone(layer_surface, panel_avoid ? 0 : -1);
+    zwlr_layer_surface_v1_set_exclusive_zone(layer_surface, exclusive_zone);
 
     // Commit to trigger configure -- DO NOT WAIT (no roundtrip)
     configured = 0;
@@ -329,19 +329,22 @@ func createWaylandWindow(title string, w, h int32) (*Window, error) {
 
 // attachLayerShellAsync attaches a wlr-layer-shell overlay role asynchronously.
 // Configure arrives via SDL's event pump. Check IsLayerShellReady() before rendering.
-func attachLayerShellAsync(window *Window, w, h int32, top bool, margin int32, panelAvoid bool) {
+// mode: "overlay" (exclusive_zone 0, floats over windows) or "shift" (reserve the
+// surface's own strip so tiled windows move aside). Sway 1.12 only honors
+// exclusive_zone > 0 when shrinking the usable area -- -1 is treated as floating.
+func attachLayerShellAsync(window *Window, w, h int32, top bool, margin int32, mode string) {
 	anchorTop := 0
 	if top {
 		anchorTop = 1
 	}
-	pa := 0
-	if panelAvoid {
-		pa = 1
+	exclusive := 0
+	if mode == "shift" {
+		exclusive = int(h) + int(margin)
 	}
 	ret := int(C.attach_layer_shell_async(
 		(*C.SDL_Window)(window.ptr),
 		C.int(w), C.int(h),
-		C.int(anchorTop), C.int(margin), C.int(pa),
+		C.int(anchorTop), C.int(margin), C.int(exclusive),
 	))
 
 	switch ret {

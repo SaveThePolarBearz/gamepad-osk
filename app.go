@@ -207,7 +207,7 @@ func (app *App) Run() error {
 	// Attach layer-shell asynchronously -- configure arrives via SDL event pump.
 	// Skip in daemon mode (starts hidden, first toggle-show will attach).
 	if isWayland && app.visible {
-		attachLayerShellAsync(window, width, height, app.posTop, margin, cfg.Window.PanelAvoid)
+		attachLayerShellAsync(window, width, height, app.posTop, margin, cfg.Window.Mode)
 	}
 
 	renderer, err := SDL3CreateRenderer(window)
@@ -354,7 +354,7 @@ func (app *App) Run() error {
 	for app.running {
 		// Handle toggle / explicit show / explicit hide
 		app.lock.Lock()
-		app.applyShowHide(inj, kb, rend, gamepad, cfg.Gamepad.Grab, hasLayerShell(), isWayland, window, width, height, app.posTop, margin, cfg.Window.PanelAvoid, opacity)
+		app.applyShowHide(inj, kb, rend, gamepad, cfg.Gamepad.Grab, hasLayerShell(), isWayland, window, width, height, app.posTop, margin, cfg.Window.Mode, opacity)
 		app.lock.Unlock()
 
 		// Live grab-mode switch: re-open or close the gamepad reader without
@@ -520,7 +520,7 @@ func (app *App) Run() error {
 // applyShowHide reconciles app.visible against a pending show/hide request
 // (toggle flips; an explicit show/hide is idempotent). Callers must hold app.lock.
 // It does nothing when no action is requested or the desired state already matches.
-func (app *App) applyShowHide(inj *Injector, kb *KeyboardState, rend *Renderer, gamepad *GamepadReader, grab, hasLS, isWayland bool, window *Window, width, height int32, posTop bool, margin int32, panelAvoid bool, opacity float32) {
+func (app *App) applyShowHide(inj *Injector, kb *KeyboardState, rend *Renderer, gamepad *GamepadReader, grab, hasLS, isWayland bool, window *Window, width, height int32, posTop bool, margin int32, mode string, opacity float32) {
 	var wantShow bool
 	switch {
 	case app.showPending:
@@ -549,7 +549,7 @@ func (app *App) applyShowHide(inj *Injector, kb *KeyboardState, rend *Renderer, 
 			SaveFocusedWindow() // capture game window now, used by RestoreFocus on hide
 		}
 		if isWayland {
-			attachLayerShellAsync(window, width, height, posTop, margin, panelAvoid)
+			attachLayerShellAsync(window, width, height, posTop, margin, mode)
 		} else {
 			SDL3ShowWindow(window)
 		}
