@@ -2,7 +2,9 @@ package main
 
 import (
 	"errors"
+	"math"
 	"os"
+	"sort"
 	"strings"
 	"time"
 	"unsafe"
@@ -11,8 +13,8 @@ import (
 const promptFontPath = "/usr/share/fonts/TTF/promptfont.ttf"
 
 type texCacheKey struct {
-	text string
-	font uintptr // font pointer as identity
+	text  string
+	font  uintptr // font pointer as identity
 	color Color
 }
 
@@ -24,7 +26,8 @@ type texCacheEntry struct {
 type Renderer struct {
 	renderer       *SDLRenderer
 	theme          Theme
-	unit           int32
+	unit           int32   // rounded unit (row height / band math)
+	unitF          float64 // fractional unit (exact per-row key widths)
 	pad            int32
 	statusH        int32 // height of modifier status bar
 	font           *Font
@@ -37,9 +40,10 @@ type Renderer struct {
 	dirtyFrames    int // redraw counter for double/triple buffering
 }
 
-func NewRenderer(r *SDLRenderer, theme Theme, unitSize, padding int32) (*Renderer, error) {
-	fontSize := max32(12, int32(float64(unitSize)*0.32))
-	glyphSize := max32(12, int32(float64(unitSize)*0.28))
+func NewRenderer(r *SDLRenderer, theme Theme, unitSizeF float64, padding int32) (*Renderer, error) {
+	unitSize := int32(math.Round(unitSizeF))
+	fontSize := max32(12, int32(unitSizeF*0.32))
+	glyphSize := max32(12, int32(unitSizeF*0.28))
 
 	if err := TTF3Init(); err != nil {
 		return nil, err
@@ -71,8 +75,9 @@ func NewRenderer(r *SDLRenderer, theme Theme, unitSize, padding int32) (*Rendere
 		renderer:    r,
 		theme:       theme,
 		unit:        unitSize,
+		unitF:       unitSizeF,
 		pad:         padding,
-		statusH:     max32(20, int32(float64(unitSize)*0.4)),
+		statusH:     max32(20, int32(unitSizeF*0.4)),
 		font:        font,
 		fontSmall:   fontSmall,
 		fontGlyph:   fontGlyph,
@@ -98,14 +103,15 @@ func (r *Renderer) Draw(kb *KeyboardState) {
 	// Draw modifier status bar
 	r.drawModifierBar(kb)
 
-	// Draw keyboard rows
-	y := r.pad + r.statusH
+	// Draw keyboard rows (flush to the top/edges; only interior gaps padded)
+	y := r.statusH
 	for ri, row := range kb.Layout {
-		x := r.pad
+		wpx, _ := keyRowPix(row, r.unitF, r.pad)
+		x := int32(0)
 		for ci, key := range row {
 			isCursor := ri == kb.CursorRow && ci == kb.CursorCol
-			r.drawKey(key, x, y, isCursor, kb)
-			x += int32(key.Width*float64(r.unit)) + r.pad
+			r.drawKey(key, x, y, wpx[ci], isCursor, kb)
+			x += wpx[ci] + r.pad
 		}
 		y += r.unit + r.pad
 	}
@@ -121,6 +127,46 @@ func (r *Renderer) Draw(kb *KeyboardState) {
 // MarkDirty signals that the display needs updating.
 // Redraws for 3 frames to cover double/triple buffering.
 func (r *Renderer) MarkDirty() {
+	r.dirtyFrames = 3
+}
+
+// SetScale updates key metrics after a live window resize (output switch) and
+// rebuilds the fonts + texture cache for the new unit. Window size alone isn't
+// enough: Draw lays keys out with r.unit and renders glyphs with fonts opened
+// at the old unit, which would leave keys at their old (tiny) size on a larger
+// surface.
+func (r *Renderer) SetScale(unitF float64, pad, statusH int32) {
+	r.unit = int32(math.Round(unitF))
+	r.unitF = unitF
+	r.pad = pad
+	r.statusH = statusH
+
+	fontSize := max32(12, int32(unitF*0.32))
+	glyphSize := max32(12, int32(unitF*0.28))
+	fontPath := findFont("DejaVu Sans", "Liberation Sans", "FreeSans")
+	if fontPath == "" {
+		r.dirtyFrames = 3
+		return
+	}
+	if f, err := TTF3OpenFont(fontPath, float32(fontSize)); err == nil {
+		TTF3CloseFont(r.font)
+		r.font = f
+	}
+	if f, err := TTF3OpenFont(fontPath, float32(max32(10, fontSize-4))); err == nil {
+		TTF3CloseFont(r.fontSmall)
+		r.fontSmall = f
+	}
+	if _, err := os.Stat(promptFontPath); err == nil {
+		if f, err := TTF3OpenFont(promptFontPath, float32(glyphSize)); err == nil {
+			TTF3CloseFont(r.fontGlyph)
+			r.fontGlyph = f
+		}
+	} else if f, err := TTF3OpenFont(fontPath, float32(max32(10, fontSize-6))); err == nil {
+		TTF3CloseFont(r.fontGlyph)
+		r.fontGlyph = f
+	}
+	// Old textures were rendered for the previous font sizes.
+	r.texCache = make(map[texCacheKey]texCacheEntry)
 	r.dirtyFrames = 3
 }
 
@@ -146,7 +192,7 @@ func (r *Renderer) drawModifierBar(kb *KeyboardState) {
 		labels = append(labels, "ALT-TAB")
 	}
 
-	x := r.pad
+	x := int32(0)
 	tc := r.theme.ModifierActiveText
 	for _, label := range labels {
 		r.drawPill(label, x, r.pad, r.theme.ModifierActiveBg, tc)
@@ -157,7 +203,7 @@ func (r *Renderer) drawModifierBar(kb *KeyboardState) {
 	// Status flash (right-aligned, 2 seconds)
 	if (r.flashText != "" || r.flashGlyphText != "") && time.Now().Before(r.flashEnd) {
 		sw, _ := SDL3GetRenderOutputSize(r.renderer)
-		rightEdge := float32(sw - r.pad)
+		rightEdge := float32(sw)
 
 		// Render text part (right-aligned)
 		if r.flashText != "" {
@@ -173,7 +219,8 @@ func (r *Renderer) drawModifierBar(kb *KeyboardState) {
 		if r.flashGlyphText != "" {
 			entry := r.cachedText(r.fontGlyph, r.flashGlyphText, r.theme.KeyText)
 			if entry.tex != nil {
-				dst := FRect{X: rightEdge - entry.w, Y: float32(r.pad + 2), W: entry.w, H: entry.h}
+				rightEdge = rightEdge - entry.w - 4
+				dst := FRect{X: float32(rightEdge), Y: float32(r.pad + 2), W: entry.w, H: entry.h}
 				SDL3RenderTexture(r.renderer, entry.tex, nil, &dst)
 			}
 		}
@@ -185,12 +232,12 @@ func (r *Renderer) drawPill(label string, x, y int32, bg Color, fg Color) {
 	if entry.tex == nil {
 		return
 	}
-	pw := int32(entry.w) + 10
-	ph := int32(entry.h) + 4
-	pill := FRect{X: float32(x), Y: float32(y), W: float32(pw), H: float32(ph)}
+	lw := int32(entry.w) + 10
+	lh := int32(entry.h) + 4
+	pill := FRect{X: float32(x), Y: float32(y), W: float32(lw), H: float32(lh)}
 	setColor(r.renderer, bg)
 	SDL3RenderFillRect(r.renderer, pill)
-	dst := FRect{X: float32(x + 5), Y: float32(y + 2), W: entry.w, H: entry.h}
+	dst := FRect{X: pill.X + (pill.W-entry.w)/2, Y: pill.Y + (pill.H-entry.h)/2, W: entry.w, H: entry.h}
 	SDL3RenderTexture(r.renderer, entry.tex, nil, &dst)
 }
 
@@ -219,10 +266,14 @@ func (r *Renderer) cachedText(font *Font, text string, color Color) texCacheEntr
 	return entry
 }
 
-func (r *Renderer) drawKey(key KeyDef, x, y int32, isCursor bool, kb *KeyboardState) {
-	w := int32(key.Width * float64(r.unit))
-	h := r.unit
-	rect := FRect{X: float32(x), Y: float32(y), W: float32(w), H: float32(h)}
+func (r *Renderer) drawKey(key KeyDef, x, y, width int32, isCursor bool, kb *KeyboardState) {
+	base := FRect{
+		X: float32(x), Y: float32(y),
+		W: float32(width), H: float32(r.unit),
+	}
+	rect := base
+	x, y = int32(rect.X), int32(rect.Y)
+	w, h := int32(rect.W), int32(rect.H)
 	t := r.theme
 
 	flashed := kb.IsFlashed(key)
@@ -286,11 +337,12 @@ func (r *Renderer) drawAccentPopup(kb *KeyboardState) {
 	sel := kb.AccentPopup.Selected
 	row := kb.Layout[kb.CursorRow]
 
-	xo := r.pad
+	wpx, _ := keyRowPix(row, r.unitF, r.pad)
+	xo := int32(0)
 	for i := range kb.CursorCol {
-		xo += int32(row[i].Width*float64(r.unit)) + r.pad
+		xo += wpx[i] + r.pad
 	}
-	ky := r.pad + r.statusH + int32(kb.CursorRow)*(r.unit+r.pad) //nolint:gosec // G115: cursor index fits in int32
+	ky := r.statusH + int32(kb.CursorRow)*(r.unit+r.pad) //nolint:gosec // G115: cursor index fits in int32
 	py := ky - r.unit - r.pad
 
 	tw := int32(len(accents))*(r.unit+r.pad) + r.pad //nolint:gosec // G115: accent count fits in int32
@@ -356,7 +408,7 @@ func (r *Renderer) renderText(font *Font, text string, color Color, rect FRect, 
 // clamping at the row edges). Returns ok=false only for points above the
 // keyboard area (status bar) or below the last row.
 func (r *Renderer) KeyAtWindow(kb *KeyboardState, px, py int32) (int, int, bool) {
-	top := r.pad + r.statusH
+	top := r.statusH
 	if py < top {
 		return 0, 0, false
 	}
@@ -368,9 +420,10 @@ func (r *Renderer) KeyAtWindow(kb *KeyboardState, px, py int32) (int, int, bool)
 
 	bestCol := 0
 	bestDist := int64(1) << 62
-	x := r.pad
-	for ci, key := range row {
-		center := x + int32(key.Width*float64(r.unit))/2
+	wpx, _ := keyRowPix(row, r.unitF, r.pad)
+	x := int32(0)
+	for ci := range row {
+		center := x + wpx[ci]/2
 		dist := int64(px) - int64(center)
 		if dist < 0 {
 			dist = -dist
@@ -379,7 +432,7 @@ func (r *Renderer) KeyAtWindow(kb *KeyboardState, px, py int32) (int, int, bool)
 			bestDist = dist
 			bestCol = ci
 		}
-		x += int32(key.Width*float64(r.unit)) + r.pad
+		x += wpx[ci] + r.pad
 	}
 	return ri, bestCol, true
 }
@@ -392,11 +445,12 @@ func (r *Renderer) AccentCellAt(kb *KeyboardState, px, py int32) (int, bool) {
 	}
 	row := kb.Layout[kb.CursorRow]
 
-	xo := r.pad
+	wpx, _ := keyRowPix(row, r.unitF, r.pad)
+	xo := int32(0)
 	for i := 0; i < kb.CursorCol; i++ {
-		xo += int32(row[i].Width*float64(r.unit)) + r.pad
+		xo += wpx[i] + r.pad
 	}
-	ky := r.pad + r.statusH + int32(kb.CursorRow)*(r.unit+r.pad) //nolint:gosec // G115: cursor index fits in int32
+	ky := r.statusH + int32(kb.CursorRow)*(r.unit+r.pad) //nolint:gosec // G115: cursor index fits in int32
 	py0 := ky - r.unit - r.pad
 	cellTop := py0 + r.pad
 
@@ -455,21 +509,54 @@ func (r *Renderer) Destroy() {
 	}
 }
 
-func CalcUnitSize(layout [][]KeyDef, screenWidth int32, cfg Config) int32 {
-	if cfg.Keys.UnitSize > 0 {
-		return int32(cfg.Keys.UnitSize) //nolint:gosec // G115: unit size fits in int32
+// keyRowPix converts a fractional unit into exact integer key widths for one
+// row. Largest-remainder allocation splits the fractional pixels so the row's
+// total spans exactly round(sum(width_k*unitF)) plus the inter-key gaps. For the
+// widest row that total equals the screen width, so rendering and hit-testing
+// agree pixel-for-pixel: a key is never clipped at the edge, never leaves a
+// sliver. Both Draw and the *_At hit-test paths use this layout.
+func keyRowPix(row []KeyDef, unitF float64, pad int32) ([]int32, int32) {
+	n := len(row)
+	px := make([]int32, n)
+	if n == 0 {
+		return px, 0
 	}
-	var maxUnits float64
-	var maxKeys int
-	for _, row := range layout {
-		ru := 0.0
-		for _, k := range row {
-			ru += k.Width
+	wf := make([]float64, n)
+	total := 0.0
+	for i, k := range row {
+		v := k.Width * unitF
+		wf[i] = v
+		px[i] = int32(math.Floor(v))
+		total += v
+	}
+	target := int32(math.Round(total + float64(n-1)*float64(pad)))
+	rem := int(target-int32(n-1)*pad) - int32sum(px)
+	if rem > 0 && rem <= n {
+		idx := make([]int, n)
+		for i := range idx {
+			idx[i] = i
 		}
-		if ru > maxUnits {
-			maxUnits = ru
-			maxKeys = len(row)
+		sort.SliceStable(idx, func(a, b int) bool {
+			return wf[idx[a]]-float64(px[idx[a]]) > wf[idx[b]]-float64(px[idx[b]])
+		})
+		for i := 0; i < rem; i++ {
+			px[idx[i]]++
 		}
+	}
+	return px, target
+}
+
+func int32sum(a []int32) int {
+	s := 0
+	for _, v := range a {
+		s += int(v)
+	}
+	return s
+}
+
+func CalcUnitSizeF(layout [][]KeyDef, screenWidth int32, cfg Config) float64 {
+	if cfg.Keys.UnitSize > 0 {
+		return float64(cfg.Keys.UnitSize)
 	}
 	scale := float64(cfg.Keys.Scale) / 100.0
 	if scale <= 0 {
@@ -477,25 +564,49 @@ func CalcUnitSize(layout [][]KeyDef, screenWidth int32, cfg Config) int32 {
 	}
 	target := float64(screenWidth) * scale
 	pad := float64(cfg.Keys.Padding)
-	unit := (target - float64(maxKeys+1)*pad) / maxUnits
+	// Solve unit per row so that row fits target exactly, then take the
+	// SLOWEST unit (the widest row in pixels). Every other row is then
+	// mathematically <= target, so the window can never overshoot the screen
+	// (the old max-units-only estimate let a key-heavy row spill past it).
+	unit := -1.0
+	for _, row := range layout {
+		ru := 0.0
+		for _, k := range row {
+			ru += k.Width
+		}
+		if ru <= 0 {
+			continue
+		}
+		// Keys run flush to both screen edges (no outer padding); only the
+		// gaps BETWEEN keys are padded. Round to nearest so the widest row
+		// fills the target instead of leaving a sub-pixel runt each side.
+		n := float64(len(row) - 1)
+		if n < 0 {
+			n = 0
+		}
+		rowUnit := (target - n*pad) / ru
+		if unit < 0 || rowUnit < unit {
+			unit = rowUnit
+		}
+	}
 	if unit < 30 {
 		unit = 30
 	}
-	return int32(unit)
+	return unit
 }
 
-func CalcWindowSize(layout [][]KeyDef, unit, pad, statusH int32) (int32, int32) {
+func CalcWindowSize(layout [][]KeyDef, unitF float64, pad, statusH int32) (int32, int32) {
 	var maxW int32
 	for _, row := range layout {
-		rw := pad
-		for _, key := range row {
-			rw += int32(key.Width*float64(unit)) + pad
-		}
+		_, rw := keyRowPix(row, unitF, pad)
 		if rw > maxW {
 			maxW = rw
 		}
 	}
-	h := pad + statusH + int32(len(layout))*(unit+pad) //nolint:gosec // G115: layout row count fits in int32
+	n := int32(len(layout)) //nolint:gosec // G115: layout row count fits in int32
+	rows := max32(0, n-1)
+	u := int32(math.Round(unitF))
+	h := statusH + n*u + rows*pad
 	return maxW, h
 }
 
@@ -530,7 +641,7 @@ func findFont(names ...string) string {
 		"/usr/share/fonts",
 	}
 	filePatterns := map[string][]string{
-		"DejaVu Sans":    {"DejaVuSans.ttf"},
+		"DejaVu Sans":     {"DejaVuSans.ttf"},
 		"Liberation Sans": {"LiberationSans-Regular.ttf"},
 		"FreeSans":        {"FreeSans.ttf"},
 	}

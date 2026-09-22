@@ -55,6 +55,19 @@ func main() {
 			}
 			fmt.Fprintln(os.Stderr, "No running instance (send grab-mode-off)")
 			os.Exit(1)
+		case "--output":
+			if i+1 < len(args) {
+				i++
+				outName := args[i]
+				if IPCSend("output " + outName) {
+					os.Exit(0)
+				}
+				fmt.Fprintf(os.Stderr, "No running instance (output %q ignored); set\n  output = %s\nunder [window] in the config instead\n", outName, outName)
+				os.Exit(1)
+			} else {
+				fmt.Fprintln(os.Stderr, "Error: --output requires a wl_output name (empty = SDL primary)")
+				os.Exit(1)
+			}
 		case "--version", "-V":
 			fmt.Printf("gamepad-osk v%s\n", version)
 			os.Exit(0)
@@ -233,6 +246,10 @@ OPTIONS
   --grab-mode-on       Live: enable the gamepad reader on a running instance
   --grab-mode-off      Live: disable the gamepad reader on a running instance
                        (display + touch only) -- for when the pad drives swaynav
+  --output NAME        Live: switch a running instance to wl_output NAME
+                       (e.g. DSI-1, DP-1; empty = SDL primary). Errors out if
+                       no instance is running -- use config output = NAME for
+                       a startup target.
   --setup              Check system configuration (udev, permissions, config)
   --setup --install    Deploy udev rules, config, and systemd service
   --verbose, -v        Verbose logging (gamepad events, key injection, config)

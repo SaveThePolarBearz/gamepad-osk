@@ -118,6 +118,10 @@ func SDL3SetWindowPosition(w *Window, x, y int32) {
 	C.SDL_SetWindowPosition((*C.SDL_Window)(w.ptr), C.int(x), C.int(y))
 }
 
+func SDL3SetWindowSize(w *Window, w2, h int32) {
+	C.SDL_SetWindowSize((*C.SDL_Window)(w.ptr), C.int(w2), C.int(h))
+}
+
 func SDL3GetWindowPosition(w *Window) (int32, int32) {
 	var x, y C.int
 	C.SDL_GetWindowPosition((*C.SDL_Window)(w.ptr), &x, &y)

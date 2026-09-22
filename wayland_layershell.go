@@ -5,6 +5,7 @@ package main
 #include <wayland-client.h>
 #include "wlr-layer-shell-client.h"
 #include <stdlib.h>
+#include <stdio.h>
 #include <string.h>
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_video.h>
@@ -17,28 +18,39 @@ static struct wl_surface *wl_surf = NULL;
 static uint32_t configure_serial = 0;
 static int configured = 0;
 
-// --- Output matching ---
+// --- Target output selection ---
+// SDL display names (long descriptive strings) don't match wl_output names, and
+// sway reports wl_output geometry positions as (0,0) on every output, so both
+// position- and SDL-name-matching are unreliable. Targeting is therefore by
+// wl_output NAME when configured (e.g. "DSI-1"), else the SDL primary matched
+// by current-mode size.
 static struct wl_output *target_output = NULL;
-static int target_x = 0, target_y = 0;
+static char target_name[64] = ""; // configured wl_output name ("" = SDL primary)
+static int target_w = 0, target_h = 0; // SDL primary pixel size (the landing screen)
+static int target_tw = 0, target_th = 0; // matching wl_output current-mode size
 
 // Track outputs during registry discovery
 #define MAX_OUTPUTS 8
 static struct {
     struct wl_output *output;
     int x, y;
+    int tw, th; // current-mode pixel size
+    int transform; // WL_OUTPUT_TRANSFORM_* (geometry event)
     int done; // geometry received
+    char name[64]; // wl_output.name (sway: DSI-1, DP-1, ...)
 } discovered_outputs[MAX_OUTPUTS];
 static int num_outputs = 0;
 
 static void output_geometry(void *data, struct wl_output *output,
     int32_t x, int32_t y, int32_t pw, int32_t ph,
     int32_t subpixel, const char *make, const char *model, int32_t transform) {
-    (void)pw; (void)ph; (void)subpixel; (void)make; (void)model; (void)transform;
+    (void)pw; (void)ph; (void)subpixel; (void)make; (void)model;
     // Find this output in our list and store geometry
     for (int i = 0; i < num_outputs; i++) {
         if (discovered_outputs[i].output == output) {
             discovered_outputs[i].x = x;
             discovered_outputs[i].y = y;
+            discovered_outputs[i].transform = transform;
             discovered_outputs[i].done = 1;
             break;
         }
@@ -47,7 +59,18 @@ static void output_geometry(void *data, struct wl_output *output,
 
 static void output_mode(void *data, struct wl_output *output,
     uint32_t flags, int32_t w, int32_t h, int32_t refresh) {
-    (void)data; (void)output; (void)flags; (void)w; (void)h; (void)refresh;
+    (void)data; (void)output; (void)refresh;
+    // wl_output.mode flag WLR_OUTPUT_MODE_CURRENT == 1: only the current
+    // mode is the output's real pixel size (preferred/offered modes aren't).
+    if (flags & 1) {
+        for (int i = 0; i < num_outputs; i++) {
+            if (discovered_outputs[i].output == output) {
+                discovered_outputs[i].tw = w;
+                discovered_outputs[i].th = h;
+                break;
+            }
+        }
+    }
 }
 static void output_done(void *data, struct wl_output *output) {
     (void)data; (void)output;
@@ -56,7 +79,13 @@ static void output_scale(void *data, struct wl_output *output, int32_t factor) {
     (void)data; (void)output; (void)factor;
 }
 static void output_name(void *data, struct wl_output *output, const char *name) {
-    (void)data; (void)output; (void)name;
+    (void)data;
+    for (int i = 0; i < num_outputs; i++) {
+        if (discovered_outputs[i].output == output) {
+            snprintf(discovered_outputs[i].name, sizeof(discovered_outputs[i].name), "%s", name);
+            break;
+        }
+    }
 }
 static void output_description(void *data, struct wl_output *output, const char *desc) {
     (void)data; (void)output; (void)desc;
@@ -84,6 +113,7 @@ static void registry_global(void *data, struct wl_registry *registry,
             &wl_output_interface, version < 4 ? version : 4);
         discovered_outputs[num_outputs].output = out;
         discovered_outputs[num_outputs].done = 0;
+        discovered_outputs[num_outputs].name[0] = '\0';
         wl_output_add_listener(out, &output_listener, NULL);
         num_outputs++;
     }
@@ -118,14 +148,32 @@ static const struct zwlr_layer_surface_v1_listener layer_surface_listener = {
     .closed = layer_surface_closed,
 };
 
-// Select the wl_output matching the target monitor position.
+// Select the target output: by configured name when set, else by SDL-primary
+// current-mode size.
 static void select_target_output() {
     target_output = NULL;
+    target_tw = 0;
+    target_th = 0;
+    if (target_name[0]) {
+        for (int i = 0; i < num_outputs; i++) {
+            if (discovered_outputs[i].output &&
+                strcmp(discovered_outputs[i].name, target_name) == 0) {
+                target_output = discovered_outputs[i].output;
+                target_tw = discovered_outputs[i].tw;
+                target_th = discovered_outputs[i].th;
+                return;
+            }
+        }
+        return;
+    }
+    if (target_w <= 0 || target_h <= 0) return;
     for (int i = 0; i < num_outputs; i++) {
-        if (discovered_outputs[i].done &&
-            discovered_outputs[i].x == target_x &&
-            discovered_outputs[i].y == target_y) {
+        if (discovered_outputs[i].output &&
+            discovered_outputs[i].tw == target_w &&
+            discovered_outputs[i].th == target_h) {
             target_output = discovered_outputs[i].output;
+            target_tw = discovered_outputs[i].tw;
+            target_th = discovered_outputs[i].th;
             return;
         }
     }
@@ -150,6 +198,148 @@ static int discover_globals(SDL_Window *sdl_win) {
 
     select_target_output();
     return 0;
+}
+
+// --- Temp output enumeration for pre-window sizing (see lookup_target_output_size).
+// Fully isolated from the layer-shell/discovery statics used by the SDL attach path.
+static struct wl_output *tmp_outs[MAX_OUTPUTS];
+static int tmp_n = 0;
+static int tmp_w[MAX_OUTPUTS], tmp_h[MAX_OUTPUTS], tmp_tr[MAX_OUTPUTS];
+static char tmp_nm[MAX_OUTPUTS][64];
+
+static void tmp_geometry(void *data, struct wl_output *out,
+    int32_t ox, int32_t oy, int32_t pw, int32_t ph,
+    int32_t sp, const char *mk, const char *md, int32_t tr) {
+    (void)data; (void)out; (void)ox; (void)oy;
+    (void)pw; (void)ph; (void)sp; (void)mk; (void)md;
+    for (int i = 0; i < tmp_n; i++) {
+        if (tmp_outs[i] == out) {
+            tmp_tr[i] = tr;
+            break;
+        }
+    }
+}
+static void tmp_mode(void *data, struct wl_output *out,
+    uint32_t flags, int32_t mw, int32_t mh, int32_t ref) {
+    (void)data; (void)out; (void)ref;
+    if (flags & 1) { // WLR_OUTPUT_MODE_CURRENT
+        for (int i = 0; i < tmp_n; i++) {
+            if (tmp_outs[i] == out) {
+                tmp_w[i] = mw;
+                tmp_h[i] = mh;
+                break;
+            }
+        }
+    }
+}
+static void tmp_done(void *data, struct wl_output *out) { (void)data; (void)out; }
+static void tmp_scale(void *data, struct wl_output *out, int32_t s) { (void)data; (void)out; (void)s; }
+static void tmp_name(void *data, struct wl_output *out, const char *n) {
+    (void)data;
+    for (int i = 0; i < tmp_n; i++) {
+        if (tmp_outs[i] == out) {
+            snprintf(tmp_nm[i], sizeof(tmp_nm[i]), "%s", n);
+            break;
+        }
+    }
+}
+static void tmp_desc(void *data, struct wl_output *out, const char *d) { (void)data; (void)out; (void)d; }
+
+static const struct wl_output_listener tmp_listener = {
+    .geometry = tmp_geometry,
+    .mode = tmp_mode,
+    .done = tmp_done,
+    .scale = tmp_scale,
+    .name = tmp_name,
+    .description = tmp_desc,
+};
+
+static void tmp_registry(void *data, struct wl_registry *reg,
+    uint32_t name, const char *iface, uint32_t ver) {
+    (void)data; (void)name; (void)ver;
+    if (strcmp(iface, wl_output_interface.name) == 0 && tmp_n < MAX_OUTPUTS) {
+        struct wl_output *out = wl_registry_bind(reg, name,
+            &wl_output_interface, ver < 4 ? ver : 4);
+        tmp_outs[tmp_n] = out;
+        tmp_nm[tmp_n][0] = '\0';
+        wl_output_add_listener(out, &tmp_listener, NULL);
+        tmp_n++;
+    }
+}
+static void tmp_registry_remove(void *data, struct wl_registry *reg, uint32_t name) {
+    (void)data; (void)reg; (void)name;
+}
+static const struct wl_registry_listener tmp_registry_listener = {
+    .global = tmp_registry,
+    .global_remove = tmp_registry_remove,
+};
+
+// Open the short-lived Wayland connection and enumerate outputs (sizes + names).
+// Returns 1 with *dpy/*reg set (caller must tmp_cleanup), 0 on failure.
+static int tmp_enumerate(struct wl_display **dpy, struct wl_registry **reg) {
+    *dpy = wl_display_connect(NULL);
+    if (!*dpy) return 0;
+    tmp_outs[0] = NULL;
+    tmp_n = 0;
+    *reg = wl_display_get_registry(*dpy);
+    wl_registry_add_listener(*reg, &tmp_registry_listener, NULL);
+    wl_display_roundtrip(*dpy);
+    wl_display_roundtrip(*dpy);
+    return 1;
+}
+
+static void tmp_cleanup(struct wl_display *dpy, struct wl_registry *registry) {
+    for (int i = 0; i < tmp_n; i++) {
+        wl_output_destroy(tmp_outs[i]);
+    }
+    wl_registry_destroy(registry);
+    wl_display_disconnect(dpy);
+}
+
+// Look up a wl_output's current-mode pixel size by NAME (e.g. "DSI-1") or by
+// size (SDL primary WxH). These run before any window exists via a short
+// separate Wayland connection, leaving the layer-shell statics untouched.
+// Returns 1 and sets *ow/*oh on a match, else 0.
+static int lookup_named_output_size(const char *name, int *ow, int *oh, int *otr) {
+    struct wl_display *dpy;
+    struct wl_registry *reg;
+    if (!tmp_enumerate(&dpy, &reg) || !name || !name[0]) {
+        if (dpy) tmp_cleanup(dpy, reg);
+        return 0;
+    }
+    int found = 0;
+    for (int i = 0; i < tmp_n; i++) {
+        if (tmp_nm[i][0] && strcmp(tmp_nm[i], name) == 0 && tmp_w[i] > 0) {
+            *ow = tmp_w[i];
+            *oh = tmp_h[i];
+            *otr = tmp_tr[i];
+            found = 1;
+            break;
+        }
+    }
+    tmp_cleanup(dpy, reg);
+    return found;
+}
+
+static int lookup_target_output_size(int w, int h, int *ow, int *oh, int *otr) {
+    struct wl_display *dpy;
+    struct wl_registry *reg;
+    if (!tmp_enumerate(&dpy, &reg) || w <= 0 || h <= 0) {
+        if (dpy) tmp_cleanup(dpy, reg);
+        return 0;
+    }
+    int found = 0;
+    for (int i = 0; i < tmp_n; i++) {
+        if (tmp_w[i] == w && tmp_h[i] == h && tmp_w[i] > 0) {
+            *ow = tmp_w[i];
+            *oh = tmp_h[i];
+            *otr = tmp_tr[i];
+            found = 1;
+            break;
+        }
+    }
+    tmp_cleanup(dpy, reg);
+    return found;
 }
 
 // Attach layer-shell role asynchronously (no roundtrip wait).
@@ -177,6 +367,10 @@ static int attach_layer_shell_async(SDL_Window *sdl_win, int width, int height,
         int ret = discover_globals(sdl_win);
         if (ret != 0) return ret;
     }
+
+    // Re-select the target output each attach so a live `output <name>` IPC
+    // switch takes effect on the re-attach below.
+    select_target_output();
 
     // Destroy existing layer surface if re-attaching (e.g. daemon toggle)
     if (layer_surface) {
@@ -292,22 +486,80 @@ static int has_layer_shell() {
     return layer_surface != NULL;
 }
 
-// Set the target monitor position for output matching.
-static void set_target_monitor(int x, int y) {
-    target_x = x;
-    target_y = y;
+// Set the target output size (SDL primary bounds) for wl_output matching.
+static void set_target_size(int w, int h) {
+    target_w = w;
+    target_h = h;
+    target_name[0] = '\0'; // size-match supersedes any stale configured name
+}
+static void set_target_name(const char *name) {
+    if (!name) { target_name[0] = '\0'; return; }
+    snprintf(target_name, sizeof(target_name), "%s", name);
 }
 */
 import "C"
 import (
 	"log"
+	"unsafe"
 )
 
 var layerShellActive bool
 
-// setTargetMonitor sets the target monitor position for wl_output matching.
-func setTargetMonitor(x, y int32) {
-	C.set_target_monitor(C.int(x), C.int(y))
+// setTargetSize selects the wl_output to attach layer-shell to, by current-mode
+// size matching the SDL primary bounds.
+func setTargetSize(w, h int32) {
+	C.set_target_size(C.int(w), C.int(h))
+}
+
+// setTargetName selects the wl_output to attach layer-shell to, by name
+// (e.g. "DSI-1", "DP-1" -- see `swaymsg -t get_outputs`).
+func setTargetName(name string) {
+	cname := C.CString(name)
+	defer C.free(unsafe.Pointer(cname))
+	C.set_target_name(cname)
+}
+
+// getNamedOutputInfo finds a wl_output named `name` and returns its LOGICAL
+// (post-transform) pixel size, so the keyboard spans the width the user sees
+// on the target screen (a transform-90/270 output's logical width is its long
+// edge). The wl_output mode event reports the physical size; the transform
+// decides which axis is logical width. Works before the window exists via a
+// short separate Wayland connection. ok=false if not on Wayland or no output.
+func getNamedOutputInfo(name string) (int32, int32, bool) {
+	if name == "" {
+		return 0, 0, false
+	}
+	cname := C.CString(name)
+	defer C.free(unsafe.Pointer(cname))
+	var ow, oh, otr C.int
+	ok := C.lookup_named_output_size(cname, &ow, &oh, &otr) != 0
+	if !ok {
+		return 0, 0, false
+	}
+	lw, lh := int32(ow), int32(oh)
+	if otr == 1 || otr == 3 { // 90 or 270: logical axes are swapped
+		lw, lh = lh, lw
+	}
+	return lw, lh, true
+}
+
+// getTargetOutputInfo finds a wl_output whose physical current-mode size equals
+// (w, h) -- the SDL primary the OSK will land on -- and returns its LOGICAL
+// (post-transform) size. ok=false if not on Wayland or no match.
+func getTargetOutputInfo(w, h int32) (int32, int32, bool) {
+	if w <= 0 || h <= 0 {
+		return 0, 0, false
+	}
+	var ow, oh, otr C.int
+	ok := C.lookup_target_output_size(C.int(w), C.int(h), &ow, &oh, &otr) != 0
+	if !ok {
+		return 0, 0, false
+	}
+	lw, lh := int32(ow), int32(oh)
+	if otr == 1 || otr == 3 { // 90 or 270: logical axes are swapped
+		lw, lh = lh, lw
+	}
+	return lw, lh, true
 }
 
 // createWaylandWindow creates an SDL3 window with a roleless Wayland surface.

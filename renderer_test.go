@@ -3,15 +3,15 @@ package main
 import "testing"
 
 func TestKeyAtWindow(t *testing.T) {
-	r := &Renderer{unit: 50, pad: 4, statusH: 20}
+	r := &Renderer{unit: 50, unitF: 50, pad: 4, statusH: 20}
 	kb := NewKeyboardState(LayoutQWERTY)
-	top := r.pad + r.statusH
+	top := r.statusH
 
 	for ri, row := range kb.Layout {
 		y := top + int32(ri)*(r.unit+r.pad) + r.unit/2
-		x := r.pad
+		x := int32(0)
 		for ci, key := range row {
-			w := int32(key.Width * float64(r.unit))
+			w := int32(key.Width * float64(r.unit)) // unit is integral in tests: == keyRowPix
 			center := x + w/2
 			gotR, gotC, ok := r.KeyAtWindow(kb, center, y)
 			if !ok || gotR != ri || gotC != ci {
@@ -32,18 +32,18 @@ func TestKeyAtWindow(t *testing.T) {
 }
 
 func TestAccentCellAt(t *testing.T) {
-	r := &Renderer{unit: 50, pad: 4, statusH: 20}
+	r := &Renderer{unit: 50, unitF: 50, pad: 4, statusH: 20}
 	kb := NewKeyboardState(LayoutQWERTY)
 	kb.CursorRow = 2
 	kb.CursorCol = 1
 	kb.AccentPopup = &AccentPopupState{Accents: accentE, Selected: 0}
 
 	row := kb.Layout[kb.CursorRow]
-	xo := r.pad
+	xo := int32(0)
 	for i := 0; i < kb.CursorCol; i++ {
 		xo += int32(row[i].Width*float64(r.unit)) + r.pad
 	}
-	ky := r.pad + r.statusH + int32(kb.CursorRow)*(r.unit+r.pad)
+	ky := r.statusH + int32(kb.CursorRow)*(r.unit+r.pad)
 	py0 := ky - r.unit - r.pad
 
 	for i := range kb.AccentPopup.Accents {

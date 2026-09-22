@@ -32,12 +32,13 @@ type ThemeConfig struct {
 }
 
 type WindowConfig struct {
-	Position     string  // "bottom" or "top"
+	Position     string // "bottom" or "top"
 	Margin       int
-	BottomMargin int     // deprecated, migrated to Margin
+	BottomMargin int // deprecated, migrated to Margin
 	Opacity      float64
-	PanelAvoid   bool    // Wayland: respect panel exclusive zones (false = always screen edge)
-	Mode         string  // overlay (float over windows) or shift (reserve space, tiles move aside)
+	PanelAvoid   bool   // Wayland: respect panel exclusive zones (false = always screen edge)
+	Mode         string // overlay (float over windows) or shift (reserve space, tiles move aside)
+	Output       string // Wayland: wl_output name to show on (e.g. "DSI-1"); empty = SDL primary
 }
 
 type KeysConfig struct {
@@ -81,7 +82,7 @@ type MouseConfig struct {
 func DefaultConfig() Config {
 	return Config{
 		Theme:  ThemeConfig{Name: "matrix"},
-		Window: WindowConfig{Position: "bottom", Margin: 0, Opacity: 0.95, PanelAvoid: true, Mode: "overlay"},
+		Window: WindowConfig{Position: "bottom", Margin: 0, Opacity: 0.95, PanelAvoid: true, Mode: "overlay", Output: ""},
 		Keys:   KeysConfig{UnitSize: 0, Padding: 4, FontSize: 0, Scale: 50, RepeatDelayMs: 400, RepeatRateMs: 80},
 		Gamepad: GamepadConfig{
 			Grab:          true,
@@ -91,12 +92,12 @@ func DefaultConfig() Config {
 			MouseStick:    "right",
 			ComboPeriodMs: 200,
 			Buttons: ButtonsConfig{
-				Press:      "a",
-				Close:      "b",
-				Backspace:  "x",
-				Space:      "y",
-				Shift:      "lt",
-				Enter:      "rt",
+				Press:          "a",
+				Close:          "b",
+				Backspace:      "x",
+				Space:          "y",
+				Shift:          "lt",
+				Enter:          "rt",
 				LeftClick:      "rb",
 				RightClick:     "lb",
 				PositionToggle: "start",
@@ -181,6 +182,8 @@ func parseINI(r io.Reader, cfg *Config) error {
 				cfg.Window.PanelAvoid = parseBool("panel_avoid", val, true)
 			case "mode":
 				cfg.Window.Mode = val
+			case "output":
+				cfg.Window.Output = val
 			default:
 				Debugf("unknown config key: window.%s", key)
 			}
@@ -302,6 +305,7 @@ func writeINI(w io.Writer, cfg Config) error {
 	b.WriteString(line(kv("opacity", strconv.FormatFloat(cfg.Window.Opacity, 'f', -1, 64)), "0.0-1.0 (1.0 = fully opaque)"))
 	b.WriteString(line(kv("panel_avoid", strconv.FormatBool(cfg.Window.PanelAvoid)), "Wayland: respect panel spacing (false = always screen edge)"))
 	b.WriteString(line(kv("mode", cfg.Window.Mode), "overlay = float over windows (default), shift = reserve space, tiles move aside"))
+	b.WriteString(line(kv("output", cfg.Window.Output), "Wayland wl_output name (e.g. DSI-1, DP-1); empty = SDL primary"))
 	b.WriteString("\n")
 
 	b.WriteString("[keys]\n")
@@ -316,7 +320,7 @@ func writeINI(w io.Writer, cfg Config) error {
 	b.WriteString("[gamepad]\n")
 	b.WriteString(line(kv("device", cfg.Gamepad.Device), "empty = auto-detect, or /dev/input/eventX"))
 	b.WriteString(line(kvf("grab", cfg.Gamepad.Grab), "grab device when visible (prevents input bleed to game)"))
-b.WriteString(line(kv("deadzone", strconv.FormatFloat(cfg.Gamepad.Deadzone, 'f', -1, 64)), "stick deadzone (0.0-1.0)"))
+	b.WriteString(line(kv("deadzone", strconv.FormatFloat(cfg.Gamepad.Deadzone, 'f', -1, 64)), "stick deadzone (0.0-1.0)"))
 	b.WriteString(line(kvf("long_press_ms", cfg.Gamepad.LongPressMs), "ms to hold for accent popup (100-5000)"))
 	b.WriteString(line(kv("swap_xy", cfg.Gamepad.SwapXY), "auto = detect xpad/xpadneo/xone drivers (default), true = force swap, false = off"))
 	b.WriteString(line(kv("mouse_stick", cfg.Gamepad.MouseStick), "left or right - nav uses the other stick"))

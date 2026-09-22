@@ -8,6 +8,8 @@ position = bottom            # bottom or top
 margin = 0                   # pixels from screen edge
 opacity = 0.95               # 0.0-1.0 (1.0 = fully opaque)
 panel_avoid = true           # Wayland: respect panel spacing (false = always screen edge)
+mode = overlay               # overlay = float over windows (default), shift = reserve space, tiles move aside
+output =                     # Wayland wl_output name (e.g. DSI-1, DP-1); empty = SDL primary
 
 [keys]
 unit_size = 0                # 0 = auto-scale, or fixed pixel size

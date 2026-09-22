@@ -6,6 +6,7 @@ import (
 	"runtime"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -21,26 +22,28 @@ func init() {
 }
 
 type App struct {
-	config          Config
-	running         bool
-	visible         bool
-	daemon          bool
-	touchOnly       bool
-	togglePending   bool
-	grabModePending bool
-	showPending     bool
-	hidePending     bool
-	lock            sync.Mutex
-	themeIdx        int
-	posTop          bool // true = keyboard at top of screen
-	window          *Window
-	mon             MonitorRect // raw monitor bounds
-	posArea         MonitorRect // positioning area (workarea on X11, same as mon on Wayland)
-	winW            int32
-	winH            int32
-	winX            int32 // stored for re-apply after show
-	winY            int32
-	margin          int32
+	config            Config
+	running           bool
+	visible           bool
+	daemon            bool
+	touchOnly         bool
+	togglePending     bool
+	grabModePending   bool
+	showPending       bool
+	hidePending       bool
+	outputPendingSet  bool
+	outputPendingName string
+	lock              sync.Mutex
+	themeIdx          int
+	posTop            bool // true = keyboard at top of screen
+	window            *Window
+	mon               MonitorRect // raw monitor bounds
+	posArea           MonitorRect // positioning area (workarea on X11, same as mon on Wayland)
+	winW              int32
+	winH              int32
+	winX              int32 // stored for re-apply after show
+	winY              int32
+	margin            int32
 
 	// Key repeat state
 	repeatAction  ActionType // action to repeat (ActionNone = inactive)
@@ -110,14 +113,35 @@ func (app *App) Run() error {
 
 	initX11Detection()
 
+	isWayland = os.Getenv("WAYLAND_DISPLAY") != ""
+
 	// Get primary monitor
 	mon := GetPrimaryMonitor()
-	unit := CalcUnitSize(layout, mon.W, cfg)
+	// Wayland: the layer surface lands on a specific wl_output. Size from THAT
+	// output's real pixel width (config `output = <name>`, else the SDL primary
+	// matched by size), so scale=100 spans the full screen it shows on. Falls
+	// back to SDL primary bounds on X11 or if unmatched.
+	if isWayland {
+		if cfg.Window.Output != "" {
+			if tw, th, ok := getNamedOutputInfo(cfg.Window.Output); ok && tw > 0 {
+				Debugf("Target output %q is %dx%d (logical)", cfg.Window.Output, tw, th)
+				mon.W, mon.H = tw, th
+			} else {
+				Debugf("Configured output %q not found, sizing from SDL primary width %d", cfg.Window.Output, mon.W)
+			}
+		} else if tw, th, ok := getTargetOutputInfo(mon.W, mon.H); ok && tw > 0 {
+			Debugf("Target output is %dx%d (SDL primary said %dx%d)", tw, th, mon.W, mon.H)
+			mon.W, mon.H = tw, th
+		} else {
+			Debugf("No wl_output match for %dx%d, sizing from SDL primary width %d", mon.W, mon.H, mon.W)
+		}
+	}
+	unit := CalcUnitSizeF(layout, mon.W, cfg)
 	pad := int32(cfg.Keys.Padding) //nolint:gosec // G115: padding fits in int32
-	statusH := max32(20, int32(float64(unit)*0.4))
+	statusH := max32(20, int32(unit*0.4))
 	width, height := CalcWindowSize(layout, unit, pad, statusH)
 	Debugf("Monitor: %dx%d+%d+%d, scale=%d%%, unit=%d, window=%dx%d",
-		mon.W, mon.H, mon.X, mon.Y, cfg.Keys.Scale, unit, width, height)
+		mon.W, mon.H, mon.X, mon.Y, cfg.Keys.Scale, int32(unit), width, height)
 
 	// Use workarea on X11 to avoid panels/taskbars; fall back to monitor bounds.
 	// Workarea spans all monitors - intersect with primary to get per-monitor area.
@@ -159,12 +183,16 @@ func (app *App) Run() error {
 		log.Printf("Warning: cannot set SDL_APP_ID: %v", err)
 	}
 
-	isWayland = os.Getenv("WAYLAND_DISPLAY") != ""
 	var window *Window
 	var err error
 	if isWayland {
-		// Wayland: create roleless surface, attach layer-shell asynchronously
-		setTargetMonitor(mon.X, mon.Y)
+		// Wayland: create roleless surface, attach layer-shell asynchronously.
+		// Target the configured wl_output by name, else the SDL primary by size.
+		if cfg.Window.Output != "" {
+			setTargetName(cfg.Window.Output)
+		} else {
+			setTargetSize(mon.W, mon.H)
+		}
 		window, err = createWaylandWindow("gamepad-osk", width, height)
 		if err != nil {
 			return err
@@ -267,6 +295,14 @@ func (app *App) Run() error {
 
 	// Init IPC
 	ipc := NewIPCServer(func(cmd string) {
+		if strings.HasPrefix(cmd, "output ") {
+			name := strings.TrimSpace(strings.TrimPrefix(cmd, "output"))
+			app.lock.Lock()
+			app.outputPendingName = name
+			app.outputPendingSet = true
+			app.lock.Unlock()
+			return
+		}
 		switch cmd {
 		case "toggle":
 			app.lock.Lock()
@@ -356,6 +392,57 @@ func (app *App) Run() error {
 		app.lock.Lock()
 		app.applyShowHide(inj, kb, rend, gamepad, cfg.Gamepad.Grab, hasLayerShell(), isWayland, window, width, height, app.posTop, margin, cfg.Window.Mode, opacity)
 		app.lock.Unlock()
+
+		// Live output switch (IPC `output <name>`): re-target the layer surface
+		// without restarting. Recomputes the window size for the new target's
+		// width, resizes, and re-attaches when visible. Empty name = SDL primary.
+		if app.outputPendingSet {
+			app.outputPendingSet = false
+			targetOk := false
+			if app.outputPendingName != "" {
+				if tw, th2, ok := getNamedOutputInfo(app.outputPendingName); ok && tw > 0 {
+					Debugf("Switching to output %q (%dx%d logical)", app.outputPendingName, tw, th2)
+					setTargetName(app.outputPendingName)
+					cfg.Window.Output = app.outputPendingName
+					mon.W = tw
+					mon.H = th2
+					targetOk = true
+				} else {
+					log.Printf("Warning: output %q not found, keeping current target", app.outputPendingName)
+				}
+			} else {
+				// Empty name: back to the SDL primary, re-fetched at switch time
+				// (it may have changed while running).
+				mon = GetPrimaryMonitor()
+				setTargetSize(mon.W, mon.H)
+				cfg.Window.Output = ""
+				if tw, th2, ok := getTargetOutputInfo(mon.W, mon.H); ok && tw > 0 {
+					mon.W, mon.H = tw, th2
+				}
+				Debugf("Switching back to SDL primary (%dpx wide)", mon.W)
+				targetOk = true
+			}
+			if targetOk {
+				unit = CalcUnitSizeF(layout, mon.W, cfg)
+				pad = int32(cfg.Keys.Padding) //nolint:gosec // G115: padding fits in int32
+				statusH = max32(20, int32(unit*0.4))
+				width, height = CalcWindowSize(layout, unit, pad, statusH)
+				x = app.posArea.X + (app.posArea.W-width)/2
+				app.winW, app.winH = width, height
+				app.winX = x
+				app.mon = mon
+				Debugf("Output switch complete: window=%dx%d on %q (unit=%d)", width, height, cfg.Window.Output, int32(unit))
+				if isWayland {
+					SDL3SetWindowSize(window, width, height)
+					if app.visible {
+						// Re-attach so the surface moves to the new target output.
+						destroyLayerSurface()
+						attachLayerShellAsync(window, width, height, app.posTop, margin, cfg.Window.Mode)
+					}
+				}
+				rend.SetScale(unit, pad, statusH)
+			}
+		}
 
 		// Live grab-mode switch: re-open or close the gamepad reader without
 		// restarting the daemon. Runs on the render thread; IPC handler only
