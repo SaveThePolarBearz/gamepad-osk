@@ -36,6 +36,12 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.Gamepad.Buttons.PositionToggle != "start" {
 		t.Errorf("default position_toggle = %q, want start", cfg.Gamepad.Buttons.PositionToggle)
 	}
+	if cfg.Haptics.Enabled {
+		t.Error("default haptics enabled = true, want false (motor unreachable on mainline kernel)")
+	}
+	if cfg.Haptics.Device != "/dev/input/event2" {
+		t.Errorf("default haptics device = %q, want /dev/input/event2", cfg.Haptics.Device)
+	}
 }
 
 func TestValidateConfig(t *testing.T) {
@@ -427,6 +433,10 @@ position_toggle = select
 [mouse]
 enabled = false
 sensitivity = 12
+
+[haptics]
+enabled = false
+device = /dev/input/event9
 `
 	cfg := DefaultConfig()
 	if err := parseINI(strings.NewReader(input), &cfg); err != nil {
@@ -474,6 +484,12 @@ sensitivity = 12
 	}
 	if cfg.Mouse.Enabled != false {
 		t.Error("mouse.enabled should be false")
+	}
+	if cfg.Haptics.Enabled != false {
+		t.Error("haptics.enabled should be false")
+	}
+	if cfg.Haptics.Device != "/dev/input/event9" {
+		t.Errorf("haptics.device = %q, want /dev/input/event9", cfg.Haptics.Device)
 	}
 	if cfg.Mouse.Sensitivity != 12 {
 		t.Errorf("mouse.sensitivity = %d, want 12", cfg.Mouse.Sensitivity)

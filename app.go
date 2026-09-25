@@ -65,12 +65,28 @@ type App struct {
 	// current pointer-down landed on the accent popup, so that release
 	// confirms the highlighted accent rather than a keyboard key.
 	pointOnPopup bool
+
+	// haptic buzzes the Thor motor on pointer key presses (touch/mouse only;
+	// gamepad-driven presses vibrate nothing). nil when disabled in config.
+	haptic *Haptics
 }
 
 func NewApp(config Config) *App {
-	return &App{
+	a := &App{
 		config:  config,
 		visible: true,
+	}
+	if config.Haptics.Enabled {
+		a.haptic = NewHaptics(config.Haptics.Device)
+	}
+	return a
+}
+
+// buzz fires the haptic motor after a pointer-initiated key press. It is a
+// no-op when haptics are disabled (haptic == nil) or the motor is unavailable.
+func (app *App) buzz() {
+	if app.haptic != nil {
+		app.haptic.Buzz()
 	}
 }
 
@@ -860,6 +876,7 @@ func (app *App) handlePointer(a pointerAction, x, y int32, kb *KeyboardState, in
 		if kb.AccentPopup != nil {
 			if _, ok := rend.AccentCellAt(kb, x, y); ok {
 				kb.PressCurrent(inj) // confirms the highlighted accent
+				app.buzz()
 				return
 			}
 			kb.CloseAccentPopup()
@@ -869,6 +886,7 @@ func (app *App) handlePointer(a pointerAction, x, y int32, kb *KeyboardState, in
 			kb.CursorRow = row
 			kb.CursorCol = col
 			kb.PressCurrent(inj)
+			app.buzz()
 		}
 	}
 }

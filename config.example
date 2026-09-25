@@ -49,3 +49,10 @@ position_toggle = start      # toggle keyboard top/bottom (empty = disabled)
 [mouse]
 enabled = true               # enable mouse cursor via right stick
 sensitivity = 10             # 1-50, higher = faster cursor (Shift+up/down to adjust live)
+
+[haptics]
+enabled = false              # buzz motor on touchscreen key presses (gamepad presses never buzz)
+                             # OFF by default: Thor's motor is unreachable on current mainline
+                             # kernels (needs a downstream qcom-hv-haptics driver + DT). Flip on
+                             # once a kernel with working haptics is running.
+device = /dev/input/event2   # evdev FF node (Thor: qcom-hv-haptics); empty = disabled

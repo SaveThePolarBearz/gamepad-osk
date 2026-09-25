@@ -25,6 +25,7 @@ type Config struct {
 	Keys    KeysConfig
 	Gamepad GamepadConfig
 	Mouse   MouseConfig
+	Haptics HapticsConfig
 }
 
 type ThemeConfig struct {
@@ -79,6 +80,14 @@ type MouseConfig struct {
 	Sensitivity int
 }
 
+// HapticsConfig controls the motor buzz on touchscreen key presses. The OSK
+// only buzzes on pointer (touch/mouse) presses; controller-driven presses
+// never trigger it.
+type HapticsConfig struct {
+	Enabled bool
+	Device  string // evdev FF node (AYN Thor: /dev/input/event2 qcom-hv-haptics)
+}
+
 func DefaultConfig() Config {
 	return Config{
 		Theme:  ThemeConfig{Name: "matrix"},
@@ -104,6 +113,11 @@ func DefaultConfig() Config {
 			},
 		},
 		Mouse: MouseConfig{Enabled: true, Sensitivity: 10},
+		// Haptics default OFF: the Thor's qcom-hv-haptics motor is unreachable on
+		// current mainline kernels (driver/DT never physically drive the coil; even
+		// ROCKNIX needs a downstream OnePlus-SM8750 driver + DT patch for this
+		// device). Flip enabled=true once a kernel with working haptics is running.
+		Haptics: HapticsConfig{Enabled: false, Device: "/dev/input/event2"},
 	}
 }
 
@@ -277,6 +291,15 @@ func parseINI(r io.Reader, cfg *Config) error {
 			default:
 				Debugf("unknown config key: mouse.%s", key)
 			}
+		case "haptics":
+			switch key {
+			case "enabled":
+				cfg.Haptics.Enabled = parseBool("enabled", val, true)
+			case "device":
+				cfg.Haptics.Device = val
+			default:
+				Debugf("unknown config key: haptics.%s", key)
+			}
 		default:
 			log.Printf("Warning: unknown config section [%s], key %q ignored (check section headers)", section, key) //nolint:gosec // G706: section/key from user's own config file
 		}
@@ -349,6 +372,11 @@ func writeINI(w io.Writer, cfg Config) error {
 	b.WriteString("[mouse]\n")
 	b.WriteString(line(kvf("enabled", cfg.Mouse.Enabled), "enable mouse cursor via right stick"))
 	b.WriteString(line(kvf("sensitivity", cfg.Mouse.Sensitivity), "1-50, higher = faster cursor (Shift+up/down to adjust live)"))
+	b.WriteString("\n")
+
+	b.WriteString("[haptics]\n")
+	b.WriteString(line(kvf("enabled", cfg.Haptics.Enabled), "buzz motor on touchscreen key presses (gamepad presses never buzz)"))
+	b.WriteString(line(kv("device", cfg.Haptics.Device), "evdev FF node (Thor: /dev/input/event2 qcom-hv-haptics)"))
 
 	_, err := io.WriteString(w, b.String())
 	return err
