@@ -4,3 +4,5 @@ gamepad-osk
 __pycache__/
 *.pyc
 gamepad_osk-poc/
+# Local knowledge store (personal notes; never commit into this fork)
+.opencode/
