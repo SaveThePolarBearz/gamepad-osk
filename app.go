@@ -66,6 +66,15 @@ type App struct {
 	// confirms the highlighted accent rather than a keyboard key.
 	pointOnPopup bool
 
+	// Pointer press state: pointerFired records that the press already
+	// emitted a key (a repeatable key fires on pointer-down and repeats),
+	// so the matching pointer-up must not fire it a second time.
+	// pointerFireRow/Col remember which key took the press so sliding off
+	// it mid-hold can stop the repeat instead of retargeting it.
+	pointerFired   bool
+	pointerFireRow int
+	pointerFireCol int
+
 	// haptic buzzes the Thor motor on pointer key presses (touch/mouse only;
 	// gamepad-driven presses vibrate nothing). nil when disabled in config.
 	haptic *Haptics
@@ -738,8 +747,7 @@ func (app *App) handleAction(a Action, kb *KeyboardState, inj *Injector, rend *R
 		if len(key.Accents) > 0 && kb.ShiftActive {
 			// Shift(LT)+hold on vowel - accent popup
 			kb.StartLongPress()
-		} else if !key.IsModifier && key.Label != "Cfg" && key.Label != "Paste" &&
-			len(key.Combo) == 0 && key.ShiftCode == 0 && key.Label != "Esc" {
+		} else if repeatableKey(key) {
 			// Repeatable key - fire immediately and start repeat
 			kb.PressCurrent(inj)
 			app.startRepeat(ActionPressRepeat)
@@ -842,9 +850,12 @@ const (
 )
 
 // handlePointer drives grid navigation from touch and mouse input: the
-// highlight follows the pointer, and a key press fires on release (matching
-// the gamepad A-button short-press semantics). While the accent popup is
-// open, a pointer-down on it selects the accent and release confirms it.
+// highlight follows the pointer, and every key fires on press. Repeatable
+// keys also repeat while held, matching the gamepad's ActionPressStart
+// semantics and using the same repeat_delay_ms / repeat_rate_ms. Release only
+// ends a hold; it never fires, so a press is never emitted twice. While the
+// accent popup is open, a pointer-down on it selects the accent and release
+// confirms it.
 func (app *App) handlePointer(a pointerAction, x, y int32, kb *KeyboardState, inj *Injector, rend *Renderer) {
 	if !app.visible {
 		return
@@ -853,6 +864,7 @@ func (app *App) handlePointer(a pointerAction, x, y int32, kb *KeyboardState, in
 
 	switch a {
 	case pointerDown:
+		app.pointerFired = false
 		kb.ReleaseAltTab(inj)
 		if kb.AccentPopup != nil {
 			if idx, ok := rend.AccentCellAt(kb, x, y); ok {
@@ -862,7 +874,23 @@ func (app *App) handlePointer(a pointerAction, x, y int32, kb *KeyboardState, in
 			}
 			kb.CloseAccentPopup()
 		}
-		app.moveCursorTo(x, y, kb, rend)
+		if row, col, ok := rend.KeyAtWindow(kb, x, y); ok {
+			kb.CursorRow = row
+			kb.CursorCol = col
+			// Fire on press for every key. Repeatable ones additionally arm
+			// the hold-repeat, so a tap lands immediately and holding it
+			// repeats. The ok check matters: a tap off the grid must not
+			// fire whatever key the cursor was left on.
+			key := kb.CurrentKey()
+			kb.PressCurrent(inj)
+			app.buzz()
+			if repeatableKey(key) {
+				app.startRepeat(ActionPressRepeat)
+			}
+			app.pointerFired = true
+			app.pointerFireRow = row
+			app.pointerFireCol = col
+		}
 	case pointerMove:
 		if kb.AccentPopup != nil && app.pointOnPopup {
 			if idx, ok := rend.AccentCellAt(kb, x, y); ok {
@@ -871,6 +899,11 @@ func (app *App) handlePointer(a pointerAction, x, y int32, kb *KeyboardState, in
 			return
 		}
 		app.moveCursorTo(x, y, kb, rend)
+		// Sliding off the key that took the press stops the repeat rather
+		// than repeating whatever the finger now covers.
+		if app.pointerFired && (kb.CursorRow != app.pointerFireRow || kb.CursorCol != app.pointerFireCol) {
+			app.stopRepeat()
+		}
 	case pointerUp:
 		app.pointOnPopup = false
 		if kb.AccentPopup != nil {
@@ -882,11 +915,10 @@ func (app *App) handlePointer(a pointerAction, x, y int32, kb *KeyboardState, in
 			kb.CloseAccentPopup()
 			return
 		}
-		if row, col, ok := rend.KeyAtWindow(kb, x, y); ok {
-			kb.CursorRow = row
-			kb.CursorCol = col
-			kb.PressCurrent(inj)
-			app.buzz()
+		// Keys already fired on press; release only ends the hold.
+		if app.pointerFired {
+			app.stopRepeat()
+			app.pointerFired = false
 		}
 	}
 }
@@ -911,6 +943,15 @@ func (app *App) computeY() int32 {
 		return area.Y + app.margin
 	}
 	return area.Y + area.H - app.winH - app.margin
+}
+
+// repeatableKey reports whether a key repeats while held. Both the gamepad
+// and the pointer path use this so they cannot drift apart: modifiers,
+// Cfg, Paste, Esc, and anything with a combo or shift-code fire once and are
+// deliberately excluded.
+func repeatableKey(key KeyDef) bool {
+	return !key.IsModifier && key.Label != "Cfg" && key.Label != "Paste" &&
+		len(key.Combo) == 0 && key.ShiftCode == 0 && key.Label != "Esc"
 }
 
 func (app *App) startRepeat(action ActionType) {
