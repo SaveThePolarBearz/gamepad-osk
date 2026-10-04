@@ -151,7 +151,7 @@ var (
 var LayoutQWERTY = [][]KeyDef{
 	// Row 0: Shortcuts (shift shows F-keys)
 	{
-		k("Esc", KEY_ESC, 1.5),
+		k("Esc", KEY_ESC, 1.0),
 		k("Paste", KEY_V, 1.0, "Copy"),
 		combo("Undo", KEY_Z, []int{KEY_LEFTCTRL}, "F1", KEY_F1, 1.0),
 		combo("Redo", KEY_Y, []int{KEY_LEFTCTRL}, "F2", KEY_F2, 1.0),
@@ -164,53 +164,51 @@ var LayoutQWERTY = [][]KeyDef{
 		combo("PgDn", KEY_PAGEDOWN, nil, "F9", KEY_F9, 1.0),
 		combo("Play", KEY_PLAYPAUSE, nil, "F10", KEY_F10, 1.0),
 		combo("Mute", KEY_MUTE, nil, "F11", KEY_F11, 1.0),
-		k("Del", KEY_DELETE, 1.5),
+		k("Cfg", 0, 1.0),
 	},
 	// Row 1: Numbers
 	{
-		k("`", KEY_GRAVE, "~"), k("1", KEY_1, "!"), k("2", KEY_2, "@"),
-		k("3", KEY_3, "#"), k("4", KEY_4, "$"), k("5", KEY_5, "%"),
-		k("6", KEY_6, "^"), k("7", KEY_7, "&"), k("8", KEY_8, "*"),
-		k("9", KEY_9, "("), k("0", KEY_0, ")"), k("-", KEY_MINUS, "_"),
-		k("=", KEY_EQUAL, "+"), k("Bksp", KEY_BACKSPACE, 2.0),
+		k("`", KEY_GRAVE, 1.0, "~"), k("1", KEY_1, 1.0, "!"), k("2", KEY_2, 1.0, "@"),
+		k("3", KEY_3, 1.0, "#"), k("4", KEY_4, 1.0, "$"), k("5", KEY_5, 1.0, "%"),
+		k("6", KEY_6, 1.0, "^"), k("7", KEY_7, 1.0, "&"), k("8", KEY_8, 1.0, "*"),
+		k("9", KEY_9, 1.0, "("), k("0", KEY_0, 1.0, ")"), k("-", KEY_MINUS, 1.0, "_"),
+		k("=", KEY_EQUAL, 1.0, "+"), k("Del", KEY_DELETE, 1.0),
 	},
 	// Row 2: QWERTY
 	{
-		k("Tab", KEY_TAB, 1.5),
+		k("Tab", KEY_TAB, 1.0),
 		k("q", KEY_Q, "Q"), k("w", KEY_W, "W"),
 		k("e", KEY_E, "E", accentE), k("r", KEY_R, "R"), k("t", KEY_T, "T"),
 		k("y", KEY_Y, "Y"), k("u", KEY_U, "U", accentU),
 		k("i", KEY_I, "I", accentI), k("o", KEY_O, "O", accentO),
 		k("p", KEY_P, "P"), k("[", KEY_LEFTBRACE, "{"),
-		k("]", KEY_RIGHTBRACE, "}"), k("\\", KEY_BACKSLASH, 1.5, "|"),
+		k("]", KEY_RIGHTBRACE, "}"), k("\\", KEY_BACKSLASH, 1.0, "|"),
 	},
 	// Row 3: Home row
 	{
-		mod("Caps", KEY_CAPSLOCK, 1.75, "caps"),
+		mod("Caps", KEY_CAPSLOCK, 1.5, "caps"),
 		k("a", KEY_A, "A", accentA), k("s", KEY_S, "S", accentS),
 		k("d", KEY_D, "D"), k("f", KEY_F, "F"), k("g", KEY_G, "G"),
 		k("h", KEY_H, "H"), k("j", KEY_J, "J"), k("k", KEY_K, "K"),
 		k("l", KEY_L, "L"), k(";", KEY_SEMICOLON, ":"),
-		k("'", KEY_APOSTROPHE, "\""), k("Enter", KEY_ENTER, 2.25),
+		k("'", KEY_APOSTROPHE, "\""), k("Enter", KEY_ENTER, 1.554),
 	},
-	// Row 4: Bottom alpha
+	// Row 4: Bottom alpha, with Bksp
 	{
-		mod("Shift", KEY_LEFTSHIFT, 2.25, "shift"),
+		mod("Shift", KEY_LEFTSHIFT, 2.05, "shift"),
 		k("z", KEY_Z, "Z"), k("x", KEY_X, "X"),
 		k("c", KEY_C, "C", accentC), k("v", KEY_V, "V"), k("b", KEY_B, "B"),
 		k("n", KEY_N, "N", accentN), k("m", KEY_M, "M"),
 		k(",", KEY_COMMA, "<"), k(".", KEY_DOT, ">"), k("/", KEY_SLASH, "?"),
-		mod("Shift", KEY_RIGHTSHIFT, 2.75, "shift"),
+		k("Bksp", KEY_BACKSPACE, 2.05),
 	},
 	// Row 5: Space bar
 	{
-		mod("Ctrl", KEY_LEFTCTRL, 1.5, "ctrl"),
-		mod("Super", KEY_LEFTMETA, 1.25, "meta"),
-		mod("Alt", KEY_LEFTALT, 1.25, "alt"),
-		k("Space", KEY_SPACE, 5.0),
-		mod("Alt", KEY_RIGHTALT, 1.25, "alt"),
-		k("←", KEY_LEFT, 0.75), k("→", KEY_RIGHT, 0.75), k("↑", KEY_UP, 0.75, "\u27F9"), k("↓", KEY_DOWN, 0.75, "\u27FE"),
-		k("Cfg", 0, 1.75),
+		mod("Ctrl", KEY_LEFTCTRL, 1.0, "ctrl"),
+		mod("Super", KEY_LEFTMETA, 1.0, "meta"),
+		mod("Alt", KEY_LEFTALT, 1.0, "alt"),
+		k("Space", KEY_SPACE, 7.29),
+		k("←", KEY_LEFT, 1.0), k("→", KEY_RIGHT, 1.0), k("↑", KEY_UP, 1.0), k("↓", KEY_DOWN, 1.0),
 	},
 }
 
