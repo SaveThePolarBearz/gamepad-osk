@@ -31,6 +31,33 @@ func TestKeyAtWindow(t *testing.T) {
 	}
 }
 
+// Every pixel of every key's drawn rect must resolve back to that key. A
+// nearest-centre hit test lets the right portion of the space bar resolve to
+// the left arrow, because the space bar's centre sits further from that point
+// than the arrow's centre does. Uses a fractional unit so keyRowPix's
+// largest-remainder allocation is exercised, as on the real device.
+func TestKeyAtWindowCoversWholeKeyRect(t *testing.T) {
+	r := &Renderer{unit: 79, unitF: 79.2, pad: 4, statusH: 31}
+	kb := NewKeyboardState(LayoutQWERTY)
+	top := r.statusH
+
+	for ri, row := range kb.Layout {
+		y := top + int32(ri)*(r.unit+r.pad) + r.unit/2
+		wpx, _ := keyRowPix(row, r.unitF, r.pad)
+		x := int32(0)
+		for ci, key := range row {
+			for px := x; px < x+wpx[ci]; px++ {
+				gotR, gotC, ok := r.KeyAtWindow(kb, px, y)
+				if !ok || gotR != ri || gotC != ci {
+					t.Fatalf("KeyAtWindow(x=%d) = (%d,%d,%v), want (%d,%d,true): x=%d is inside [%d][%d] %q",
+						px, gotR, gotC, ok, ri, ci, px, ri, ci, key.Label)
+				}
+			}
+			x += wpx[ci] + r.pad
+		}
+	}
+}
+
 func TestAccentCellAt(t *testing.T) {
 	r := &Renderer{unit: 50, unitF: 50, pad: 4, statusH: 20}
 	kb := NewKeyboardState(LayoutQWERTY)

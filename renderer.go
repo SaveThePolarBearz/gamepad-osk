@@ -403,9 +403,13 @@ func (r *Renderer) renderText(font *Font, text string, color Color, rect FRect, 
 }
 
 // KeyAtWindow maps a window pixel point to the keyboard grid, returning the
-// (row, col) of the key nearest to it. Points inside a row's vertical band
-// always resolve to the nearest column (snapping in the padding gaps and
-// clamping at the row edges). Returns ok=false only for points above the
+// (row, col) of the key under it. A point inside a key's drawn rect always
+// resolves to that key; nearest-centre is only the fallback for the padding
+// gaps between keys and the sliver past the last key. Containment has to come
+// first: a wide key's centre can sit closer to a narrow neighbour's centre
+// than to its own, so nearest-centre alone hands the right portion of the
+// space bar to the left arrow (and the left edge of Bksp/Enter/Del/right
+// Shift to the key before it). Returns ok=false only for points above the
 // keyboard area (status bar) or below the last row.
 func (r *Renderer) KeyAtWindow(kb *KeyboardState, px, py int32) (int, int, bool) {
 	top := r.statusH
@@ -418,10 +422,20 @@ func (r *Renderer) KeyAtWindow(kb *KeyboardState, px, py int32) (int, int, bool)
 	}
 	row := kb.Layout[ri]
 
-	bestCol := 0
-	bestDist := int64(1) << 62
 	wpx, _ := keyRowPix(row, r.unitF, r.pad)
 	x := int32(0)
+	for ci := range row {
+		if px >= x && px < x+wpx[ci] {
+			return ri, ci, true
+		}
+		x += wpx[ci] + r.pad
+	}
+
+	// Gap or past-the-end: snap to the nearest key so touches between keys
+	// still land on something, matching how the row is drawn.
+	bestCol := 0
+	bestDist := int64(1) << 62
+	x = 0
 	for ci := range row {
 		center := x + wpx[ci]/2
 		dist := int64(px) - int64(center)
