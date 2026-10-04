@@ -86,6 +86,7 @@ type MouseConfig struct {
 type HapticsConfig struct {
 	Enabled bool
 	Device  string // evdev FF node (AYN Thor: /dev/input/event2 qcom-hv-haptics)
+	Level   int    // FF_CONSTANT level, 0..32767; higher is stronger
 }
 
 func DefaultConfig() Config {
@@ -117,7 +118,7 @@ func DefaultConfig() Config {
 		// current mainline kernels (driver/DT never physically drive the coil; even
 		// ROCKNIX needs a downstream OnePlus-SM8750 driver + DT patch for this
 		// device). Flip enabled=true once a kernel with working haptics is running.
-		Haptics: HapticsConfig{Enabled: false, Device: "/dev/input/event2"},
+		Haptics: HapticsConfig{Enabled: false, Device: "/dev/input/event2", Level: DefaultBuzzLevel},
 	}
 }
 
@@ -297,6 +298,12 @@ func parseINI(r io.Reader, cfg *Config) error {
 				cfg.Haptics.Enabled = parseBool("enabled", val, true)
 			case "device":
 				cfg.Haptics.Device = val
+			case "level":
+				if n, err := strconv.Atoi(val); err == nil {
+					cfg.Haptics.Level = n
+				} else {
+					log.Printf("Warning: haptics.level has invalid integer value %q, using %d", val, DefaultBuzzLevel)
+				}
 			default:
 				Debugf("unknown config key: haptics.%s", key)
 			}
@@ -377,6 +384,7 @@ func writeINI(w io.Writer, cfg Config) error {
 	b.WriteString("[haptics]\n")
 	b.WriteString(line(kvf("enabled", cfg.Haptics.Enabled), "buzz motor on touchscreen key presses (gamepad presses never buzz)"))
 	b.WriteString(line(kv("device", cfg.Haptics.Device), "evdev FF node (Thor: /dev/input/event2 qcom-hv-haptics)"))
+	b.WriteString(line(kvf("level", cfg.Haptics.Level), "FF_CONSTANT level 0-32767 (higher = stronger)"))
 
 	_, err := io.WriteString(w, b.String())
 	return err
@@ -705,6 +713,9 @@ func checkConfig(cfg Config) []string {
 	}
 	if cfg.Mouse.Sensitivity < 1 || cfg.Mouse.Sensitivity > 50 {
 		issues = append(issues, fmt.Sprintf("sensitivity %d out of range [1,50]", cfg.Mouse.Sensitivity))
+	}
+	if cfg.Haptics.Level < 0 || cfg.Haptics.Level > maxBuzzLevel {
+		issues = append(issues, fmt.Sprintf("haptics.level %d out of range [0,%d]", cfg.Haptics.Level, maxBuzzLevel))
 	}
 	if cfg.Gamepad.LongPressMs < 100 || cfg.Gamepad.LongPressMs > 5000 {
 		issues = append(issues, fmt.Sprintf("long_press_ms %d out of range [100,5000]", cfg.Gamepad.LongPressMs))

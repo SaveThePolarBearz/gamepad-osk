@@ -1,104 +1,127 @@
 package main
 
+/*
+#include <errno.h>
+#include <linux/input.h>
+#include <string.h>
+#include <sys/ioctl.h>
+#include <unistd.h>
+
+// Upload one FF_CONSTANT effect, return its id, or -errno on failure.
+//
+// The ioctl lives in C on purpose. struct ff_effect is 48 bytes with the union
+// at offset 16, but a Go struct with the same field list has no padding, so it
+// comes out 46 bytes and every field after `direction` is two bytes off. An
+// earlier hand-rolled version had the right total size yet wrote replay.length
+// where the kernel reads replay.delay. Letting the compiler derive both the
+// layout and the EVIOCSFF number from <linux/input.h> removes that whole class
+// of bug rather than fixing one instance of it.
+//
+// FF_CONSTANT is the only effect this driver really implements.
+// haptics_upload_effect() switches on FF_CONSTANT and FF_PERIODIC with no
+// default arm, so an FF_RUMBLE upload falls out of the switch, sets
+// chip_effect_loaded, and returns 0: it reports success while programming
+// nothing, so playback is a silent no-op. FF_PERIODIC is no escape either, the
+// driver sets no waveform bits in ffbit, so ff-core rejects FF_SINE with
+// -EINVAL before the driver is reached. Note that
+// haptics_upload_ff_periodic_sine() just wraps FF_CONSTANT anyway, using
+// magnitude as the level, so going direct skips a broken layer.
+
+static int thorch_ff_upload_constant(int fd, int length_ms, int level) {
+	struct ff_effect eff;
+
+	memset(&eff, 0, sizeof(eff));
+	eff.type = FF_CONSTANT;
+	eff.id = -1; // ask the kernel to allocate a fresh slot
+	eff.replay.length = (unsigned short)length_ms;
+	eff.replay.delay = 0;
+	eff.u.constant.level = (short)level;
+
+	if (ioctl(fd, EVIOCSFF, &eff) < 0)
+		return -errno;
+
+	return eff.id;
+}
+
+static int thorch_ff_play(int fd, int id) {
+	struct input_event ev;
+
+	memset(&ev, 0, sizeof(ev));
+	ev.type = EV_FF;
+	ev.code = (unsigned short)id;
+	ev.value = 1;
+
+	if (write(fd, &ev, sizeof(ev)) != (ssize_t)sizeof(ev))
+		return -errno;
+
+	return 0;
+}
+*/
+import "C"
+
 import (
-	"encoding/binary"
 	"log"
 	"sync"
 	"syscall"
 	"time"
-	"unsafe"
 )
 
 // Haptics drives the Thor motor ("qcom-hv-haptics", /dev/input/event2) through
 // the evdev force-feedback interface. The OSK only buzzes on pointer-initiated
 // key presses (touchscreen tap or mouse click); gamepad-driven key presses go
-// through handleAction and never trigger it. Access to the device comes from
-// the same udev input/uaccess rule the gamepad already relies on; if the node
-// is unavailable the buzz is dropped silently (log once, back off 60s) so a
-// missing motor never interrupts typing.
+// through handleAction and never trigger it. If the node is unavailable the buzz
+// is dropped silently (log once, back off 60s) so a missing motor never
+// interrupts typing.
 type Haptics struct {
 	path     string
 	fd       int
 	effectID int
-	uploaded bool
+	level    int
 
 	mu       sync.Mutex
-	lastFail time.Time // open/write failure time for back-off + one-shot log
+	lastFail time.Time // open/upload/play failure time for back-off + one-shot log
 }
 
 const (
-	evFF     = 0x15 // EV_FF: force feedback events
-	ffRumble = 0x50 // FF_RUMBLE: strong + weak motors
-	buzzLen  = 25   // ms, short enough to feel like a key-tap, not a rumble
-	buzzMag  = 0x6000 // 0..0xffff motor magnitude (roughly 60%)
-	evIocWrite = 1 << 30
+	buzzLen     = 40 // ms, short enough to feel like a key-tap
 	failBackoff = 60 * time.Second
+
+	// DefaultBuzzLevel is used when [haptics] level is absent or unparseable.
+	// 0x5f00 = 24320, which is ~74% of maxBuzzLevel. An earlier comment here
+	// claimed "~25%"; that was wrong, so do not trust it over this number.
+	DefaultBuzzLevel = 0x5f00
+	maxBuzzLevel     = 0x7fff
 )
 
-// ffEffect mirrors struct ff_effect from linux/input.h. The union must be
-// 32 bytes so the whole struct is 48 (C sizeof on the kernel ABI); the rumble
-// fields live at union offset 0 (bytes 16..20 of the struct).
-type ffEffect struct {
-	Type, ID, Checksum, Direction uint16
-	Trigger                       struct{ Button, Interval uint16 }
-	Replay                        struct{ Length, Delay uint16 }
-	U                             [16]uint16 // union (strong/weak at U[0..1])
+func NewHaptics(path string, level int) *Haptics {
+	if level < 0 {
+		level = 0
+	}
+	if level > maxBuzzLevel {
+		level = maxBuzzLevel
+	}
+	return &Haptics{path: path, fd: -1, level: level, lastFail: time.Time{}}
 }
 
-// inputEvent mirrors struct input_event (24 bytes) for EV_FF play/stop writes.
-type inputEvent struct {
-	Sec, Usec int64
-	Type      uint16
-	Code      uint16
-	Value     int32
-}
-
-// iow encodes _IOW(type, nr, size) as generic ioctl (dir=write, 1<<30).
-func iow(t, nr byte, size uintptr) uintptr {
-	return evIocWrite | (size << 16) | (uintptr(t) << 8) | uintptr(nr)
-}
-
-func NewHaptics(path string) *Haptics {
-	return &Haptics{path: path, fd: -1, lastFail: time.Now()}
-}
-
-// open lazily opens the FF device and uploads a single rumble effect.
+// open lazily opens the FF device and uploads the single constant effect.
 func (h *Haptics) open() error {
 	fd, err := syscall.Open(h.path, syscall.O_RDWR|syscall.O_CLOEXEC|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return err
 	}
 
-	var eff ffEffect
-	eff.Type = ffRumble           // kernel fills eff.ID back to us
-	eff.Replay.Length = buzzLen   // auto-stop after buzzLen ms
-	eff.U[0] = buzzMag            // strong motor
-	eff.U[1] = buzzMag            // weak motor
-
-	var uploadErr error
-	for attempt := 0; attempt < 5; attempt++ {
-		_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(fd), iow('E', 0x80, unsafe.Sizeof(eff)), uintptr(unsafe.Pointer(&eff)))
-		if errno == 0 {
-			h.effectID = int(eff.ID)
-			h.uploaded = true
-			break
-		}
-		uploadErr = errno
-		if errno == syscall.EBUSY { // effect table transiently full
-			time.Sleep(10 * time.Millisecond)
-			continue
-		}
-		break
-	}
-	if !h.uploaded {
+	id := int(C.thorch_ff_upload_constant(C.int(fd), C.int(buzzLen), C.int(h.level)))
+	if id < 0 {
 		syscall.Close(fd)
-		return uploadErr
+		return syscall.Errno(-id)
 	}
+
 	h.fd = fd
+	h.effectID = id
 	return nil
 }
 
-// Buzz plays the uploaded rumble once. Nil-safe so callers can pass a lazy
+// Buzz plays the uploaded effect once. Nil-safe so callers can pass a lazy
 // *Haptics that may never have been initialized.
 func (h *Haptics) Buzz() {
 	if h == nil {
@@ -118,16 +141,9 @@ func (h *Haptics) Buzz() {
 		}
 	}
 
-	ev := inputEvent{Type: evFF, Code: uint16(h.effectID), Value: 1}
-	var buf [24]byte
-	binary.LittleEndian.PutUint64(buf[0:], uint64(ev.Sec))
-	binary.LittleEndian.PutUint64(buf[8:], uint64(ev.Usec))
-	binary.LittleEndian.PutUint16(buf[16:], ev.Type)
-	binary.LittleEndian.PutUint16(buf[18:], ev.Code)
-	binary.LittleEndian.PutUint32(buf[20:], uint32(ev.Value))
-	if n, err := syscall.Write(h.fd, buf[:]); n != len(buf) || err != nil {
+	if rc := int(C.thorch_ff_play(C.int(h.fd), C.int(h.effectID))); rc < 0 {
 		h.lastFail = time.Now()
-		log.Printf("haptics: write failed (%v) - touch buzz disabled", err)
+		log.Printf("haptics: play failed (%v) - touch buzz disabled", syscall.Errno(-rc))
 	}
 }
 

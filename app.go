@@ -86,7 +86,7 @@ func NewApp(config Config) *App {
 		visible: true,
 	}
 	if config.Haptics.Enabled {
-		a.haptic = NewHaptics(config.Haptics.Device)
+		a.haptic = NewHaptics(config.Haptics.Device, config.Haptics.Level)
 	}
 	return a
 }

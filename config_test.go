@@ -925,3 +925,84 @@ func TestTriggerDualMap(t *testing.T) {
 		t.Errorf("BTN_TL2 button = %v, want ActionShiftOn (Switch Pro compat)", am.BtnPress[BTN_TL2])
 	}
 }
+
+func TestHapticsLevel(t *testing.T) {
+	t.Run("default", func(t *testing.T) {
+		cfg := DefaultConfig()
+		if cfg.Haptics.Level != DefaultBuzzLevel {
+			t.Errorf("default haptics.level = %d, want %d", cfg.Haptics.Level, DefaultBuzzLevel)
+		}
+		if DefaultBuzzLevel <= 0 || DefaultBuzzLevel > maxBuzzLevel {
+			t.Errorf("DefaultBuzzLevel %d outside (0,%d]", DefaultBuzzLevel, maxBuzzLevel)
+		}
+	})
+
+	t.Run("parses valid int", func(t *testing.T) {
+		cfg := DefaultConfig()
+		input := "[haptics]\nenabled = true\nlevel = 9000\n"
+		if err := parseINI(strings.NewReader(input), &cfg); err != nil {
+			t.Fatalf("parseINI error: %v", err)
+		}
+		if cfg.Haptics.Level != 9000 {
+			t.Errorf("haptics.level = %d, want 9000", cfg.Haptics.Level)
+		}
+	})
+
+	t.Run("non-int keeps default", func(t *testing.T) {
+		cfg := DefaultConfig()
+		input := "[haptics]\nlevel = loud\n"
+		if err := parseINI(strings.NewReader(input), &cfg); err != nil {
+			t.Fatalf("parseINI error: %v", err)
+		}
+		if cfg.Haptics.Level != DefaultBuzzLevel {
+			t.Errorf("haptics.level = %d after junk input, want default %d", cfg.Haptics.Level, DefaultBuzzLevel)
+		}
+	})
+
+	t.Run("clamps rather than resets", func(t *testing.T) {
+		if h := NewHaptics("/dev/null", maxBuzzLevel+1); h.level != maxBuzzLevel {
+			t.Errorf("level = %d, want clamp to %d", h.level, maxBuzzLevel)
+		}
+		if h := NewHaptics("/dev/null", -5); h.level != 0 {
+			t.Errorf("level = %d, want clamp to 0", h.level)
+		}
+		if h := NewHaptics("/dev/null", 9000); h.level != 9000 {
+			t.Errorf("level = %d, want 9000 passed through", h.level)
+		}
+	})
+
+	t.Run("checkConfig flags out of range", func(t *testing.T) {
+		for _, bad := range []int{-1, maxBuzzLevel + 1} {
+			cfg := DefaultConfig()
+			cfg.Haptics.Level = bad
+			found := false
+			for _, issue := range checkConfig(cfg) {
+				if strings.Contains(issue, "haptics.level") {
+					found = true
+				}
+			}
+			if !found {
+				t.Errorf("checkConfig did not flag haptics.level = %d", bad)
+			}
+		}
+	})
+
+	t.Run("writeINI round-trips level", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.Haptics.Level = 12345
+		var sb strings.Builder
+		if err := writeINI(&sb, cfg); err != nil {
+			t.Fatalf("writeINI error: %v", err)
+		}
+		if !strings.Contains(sb.String(), "level = 12345") {
+			t.Errorf("writeINI output missing level = 12345:\n%s", sb.String())
+		}
+		got := DefaultConfig()
+		if err := parseINI(strings.NewReader(sb.String()), &got); err != nil {
+			t.Fatalf("re-parse error: %v", err)
+		}
+		if got.Haptics.Level != 12345 {
+			t.Errorf("round-tripped haptics.level = %d, want 12345", got.Haptics.Level)
+		}
+	})
+}
