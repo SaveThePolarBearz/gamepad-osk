@@ -191,16 +191,16 @@ var LayoutQWERTY = [][]KeyDef{
 		k("d", KEY_D, "D"), k("f", KEY_F, "F"), k("g", KEY_G, "G"),
 		k("h", KEY_H, "H"), k("j", KEY_J, "J"), k("k", KEY_K, "K"),
 		k("l", KEY_L, "L"), k(";", KEY_SEMICOLON, ":"),
-		k("'", KEY_APOSTROPHE, "\""), k("Enter", KEY_ENTER, 1.554),
+		k("'", KEY_APOSTROPHE, "\""), k("Bksp", KEY_BACKSPACE, 1.554),
 	},
-	// Row 4: Bottom alpha, with Bksp
+	// Row 4: Bottom alpha, with Enter
 	{
 		mod("Shift", KEY_LEFTSHIFT, 2.05, "shift"),
 		k("z", KEY_Z, "Z"), k("x", KEY_X, "X"),
 		k("c", KEY_C, "C", accentC), k("v", KEY_V, "V"), k("b", KEY_B, "B"),
 		k("n", KEY_N, "N", accentN), k("m", KEY_M, "M"),
 		k(",", KEY_COMMA, "<"), k(".", KEY_DOT, ">"), k("/", KEY_SLASH, "?"),
-		k("Bksp", KEY_BACKSPACE, 2.05),
+		k("Enter", KEY_ENTER, 2.05),
 	},
 	// Row 5: Space bar
 	{
